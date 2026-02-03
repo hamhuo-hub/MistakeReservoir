@@ -95,6 +95,22 @@ class SaveRequest(BaseModel):
     source_filename: str
     questions: List[dict]
 
+
+
+class UpdateRequest(BaseModel):
+    id: int
+    content_html: str
+    options_html: str
+    answer_html: str
+
+@app.post("/api/question/update")
+def update_question(req: UpdateRequest):
+    try:
+        db.update_question_text(req.id, req.content_html, req.options_html, req.answer_html)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/")
 def read_root():
     return FileResponse(os.path.join(ASSET_DIR, "static/index.html"))
@@ -223,6 +239,16 @@ def confirm_save(req: SaveRequest):
 @app.get("/pool_status")
 def pool_status():
     return db.get_pool_status()
+
+
+@app.get("/api/questions")
+def get_all_questions():
+    questions = db.get_all_questions()
+    return {"count": len(questions), "questions": questions}
+
+@app.get("/browse")
+def browse_page():
+    return FileResponse(os.path.join(ASSET_DIR, "static/browse.html"))
 
 # To run: uvicorn main:app --reload
 if __name__ == "__main__":

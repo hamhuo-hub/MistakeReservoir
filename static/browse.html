@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>错题库浏览</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --bg: #f8fafc;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            margin: 0;
+            padding: 20px;
+            color: #334155;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .back-btn {
+            background: #64748b;
+            color: white;
+            padding: 8px 15px;
+            border-radius: 6px;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        th {
+            background: #f1f5f9;
+            font-weight: 600;
+        }
+
+        tr:hover {
+            background: #f8fafc;
+            cursor: pointer;
+        }
+
+        .type-tag {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            background: #e2e8f0;
+            display: inline-block;
+        }
+
+        .has-mt {
+            background: #fef3c7;
+            color: #d97706;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0, 0, 0, 0.4);
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 10% auto;
+            padding: 0;
+            border-radius: 12px;
+            width: 80%;
+            max-width: 800px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+
+        .modal-header {
+            padding: 20px;
+            border-bottom: 1px solid #e2e8f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-body {
+            padding: 20px;
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+
+        .close {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: black;
+        }
+
+        .section-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #64748b;
+            margin-top: 20px;
+            margin-bottom: 5px;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 5px;
+        }
+
+        .q-img {
+            max-width: 100%;
+            max-height: 200px;
+            margin: 5px;
+        }
+
+        .raw-html {
+            background: #f8fafc;
+            padding: 10px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #666;
+            white-space: pre-wrap;
+        }
+
+        /* Edit Mode */
+        .edit-area {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-family: inherit;
+            margin-top: 5px;
+            resize: vertical;
+        }
+
+        .btn-action {
+            padding: 5px 15px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            margin-left: 10px;
+            font-weight: bold;
+        }
+
+        .btn-edit {
+            background: #e2e8f0;
+            color: #334155;
+        }
+
+        .btn-save {
+            background: #22c55e;
+            color: white;
+            display: none;
+        }
+
+        .btn-cancel {
+            background: #ef4444;
+            color: white;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <a href="/" class="back-btn">← 返回首页</a>
+                <h2
+                    style="display:inline-block; margin-left:15px; margin-top:0; margin-bottom:0; vertical-align:middle;">
+                    数据库浏览</h2>
+            </div>
+            <div>
+                <span id="count-display" style="color:#64748b;">Loading...</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div style="margin-bottom: 15px;">
+                <input type="text" id="search" placeholder="搜索题目内容..." onkeyup="filterTable()"
+                    style="padding: 8px; width: 300px; border: 1px solid #cbd5e1; border-radius: 6px;">
+            </div>
+            <div style="overflow-x: auto;">
+                <table id="qTable">
+                    <thead>
+                        <tr>
+                            <th width="50">ID</th>
+                            <th width="80">Type</th>
+                            <th width="300">Preview</th>
+                            <th width="150">Source</th>
+                            <th width="50">Mat</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="detailModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h3 style="margin:0; display:inline-block;" id="modalTitle">Question details</h3>
+                    <button onclick="toggleEdit()" id="btnEdit" class="btn-action btn-edit">✎ Modify Text</button>
+                    <button onclick="saveEdit()" id="btnSave" class="btn-action btn-save">💾 Save</button>
+                    <button onclick="cancelEdit()" id="btnCancel" class="btn-action btn-cancel">❌ Cancel</button>
+                </div>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Content injected here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allQuestions = [];
+
+        async function loadData() {
+            try {
+                let res = await fetch('/api/questions');
+                let data = await res.json();
+                allQuestions = data.questions;
+                document.getElementById('count-display').innerText = `Total: ${data.count}`;
+
+                // Check URL param
+                const urlParams = new URLSearchParams(window.location.search);
+                const query = urlParams.get('q');
+                if (query) {
+                    document.getElementById('search').value = query;
+                }
+
+                renderTable(allQuestions);
+            } catch (e) {
+                alert("Failed to load data");
+            }
+        }
+
+        function renderTable(data) {
+            let html = "";
+            let search = document.getElementById('search').value.toLowerCase();
+
+            data.forEach(q => {
+                // Strip HTML for search and preview
+                let tmp = document.createElement("DIV");
+                tmp.innerHTML = q.content_html;
+                let text = tmp.textContent || tmp.innerText || "";
+
+                if (search && !text.toLowerCase().includes(search) && !q.type.includes(search)) return;
+
+                html += `
+                    <tr onclick="showDetail(${q.id})">
+                        <td>${q.id}</td>
+                        <td><span class="type-tag">${q.type || 'N/A'}</span></td>
+                        <td><div style="height:40px; overflow:hidden; text-overflow:ellipsis;">${text.substring(0, 100)}</div></td>
+                        <td style="font-size:12px; color:#64748b;">${q.source_filename}<br>#${q.original_num}</td>
+                        <td>${q.material_id ? '<span class="type-tag has-mt">Mat</span>' : ''}</td>
+                    </tr>
+                `;
+            });
+            document.getElementById('tableBody').innerHTML = html;
+        }
+
+        function filterTable() {
+            renderTable(allQuestions);
+        }
+
+        let currentQId = null;
+
+        function showDetail(id) {
+            let q = allQuestions.find(x => x.id === id);
+            if (!q) return;
+
+            currentQId = id;
+            document.getElementById('modalTitle').innerText = `Question #${q.id} (Ref: ${q.original_num})`;
+
+            // Reset Buttons
+            document.getElementById('btnEdit').style.display = 'inline-block';
+            document.getElementById('btnSave').style.display = 'none';
+            document.getElementById('btnCancel').style.display = 'none';
+
+            let html = "";
+
+            if (q.material_content) {
+                html += `<div class="section-title">Material</div>
+                         <div style="background:#fef3c7; padding:10px; border-radius:4px;">${q.material_content}</div>`;
+            }
+
+            html += `<div class="section-title">Stem</div>
+                     <div id="view-stem">${q.content_html}</div>
+                     <textarea id="edit-stem" class="edit-area" style="display:none"></textarea>`;
+
+            if (q.images && q.images.length > 0) {
+                html += `<div style="display:flex; gap:10px;">`;
+                q.images.forEach(img => {
+                    html += `<img src="/media/${img}" class="q-img">`;
+                });
+                html += `</div>`;
+            }
+
+            html += `<div class="section-title">Options</div>
+                     <div id="view-options">${q.options_html || '<i style="color:#999">No separated options</i>'}</div>
+                     <textarea id="edit-options" class="edit-area" style="display:none"></textarea>`;
+
+            html += `<div class="section-title">Answer & Analysis</div>
+                     <div id="view-answer">${q.answer_html}</div>
+                     <textarea id="edit-answer" class="edit-area" style="display:none"></textarea>`;
+
+            // Debug Info
+            html += `<div class="section-title" style="margin-top:40px; border-top:1px dashed #ccc;">Raw Data</div>
+                     <div class="raw-html">Type: ${q.type}\nSource ID: ${q.source_id}\nMaterial ID: ${q.material_id}</div>`;
+
+            document.getElementById('modalBody').innerHTML = html;
+            document.getElementById('detailModal').style.display = "block";
+        }
+
+        function toggleEdit() {
+            let q = allQuestions.find(x => x.id === currentQId);
+            if (!q) return;
+
+            document.getElementById('edit-stem').value = q.content_html;
+            document.getElementById('edit-options').value = q.options_html || '';
+            document.getElementById('edit-answer').value = q.answer_html;
+
+            document.getElementById('view-stem').style.display = 'none';
+            document.getElementById('view-options').style.display = 'none';
+            document.getElementById('view-answer').style.display = 'none';
+
+            document.getElementById('edit-stem').style.display = 'block';
+            document.getElementById('edit-options').style.display = 'block';
+            document.getElementById('edit-answer').style.display = 'block';
+
+            document.getElementById('btnEdit').style.display = 'none';
+            document.getElementById('btnSave').style.display = 'inline-block';
+            document.getElementById('btnCancel').style.display = 'inline-block';
+        }
+
+        function cancelEdit() {
+            showDetail(currentQId); // Re-render view
+        }
+
+        async function saveEdit() {
+            let newStem = document.getElementById('edit-stem').value;
+            let newOptions = document.getElementById('edit-options').value;
+            let newAnswer = document.getElementById('edit-answer').value;
+
+            try {
+                let res = await fetch('/api/question/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: currentQId,
+                        content_html: newStem,
+                        options_html: newOptions,
+                        answer_html: newAnswer
+                    })
+                });
+
+                if (!res.ok) throw new Error("Update failed");
+
+                // Update local data
+                let q = allQuestions.find(x => x.id === currentQId);
+                q.content_html = newStem;
+                q.options_html = newOptions;
+                q.answer_html = newAnswer;
+
+                alert("Saved!");
+                showDetail(currentQId); // Returns to view mode
+                renderTable(allQuestions); // Refresh table snippets
+
+            } catch (e) {
+                alert("Error saving: " + e.message);
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('detailModal').style.display = "none";
+        }
+
+        window.onclick = function (event) {
+            if (event.target == document.getElementById('detailModal')) {
+                closeModal();
+            }
+        }
+
+        loadData();
+    </script>
+</body>
+
+</html>

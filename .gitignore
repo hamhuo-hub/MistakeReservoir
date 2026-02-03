@@ -2,3 +2,9 @@
 /_internal
 /media
 /uploads
+/build
+/build
+/dist
+/build/MistakeReservoir
+/build
+*.toc

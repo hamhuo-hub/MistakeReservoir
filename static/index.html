@@ -230,7 +230,13 @@
             <div id="stats-bar" style="flex:1; margin-bottom:0; margin-right:20px;">
                 <!-- populated by js -->
             </div>
-            <button id="themeToggleBtn" onclick="toggleTheme()" class="theme-btn" title="Switch Theme">🎨</button>
+            <div>
+                <a href="/browse" class="theme-btn" title="Browse Database"
+                    style="display:inline-flex; width:auto; padding:0 15px; border-radius:20px; text-decoration:none; margin-right:10px; color:#334155; font-size:16px;">
+                    📂 <span style="margin-left:5px; font-size:14px; font-weight:bold;">浏览题库</span>
+                </a>
+                <button id="themeToggleBtn" onclick="toggleTheme()" class="theme-btn" title="Switch Theme">🎨</button>
+            </div>
         </div>
 
         <div class="card">
@@ -595,10 +601,10 @@
                 let html = "";
                 for (let type in data) {
                     html += `
-                    <div class="stat-box">
+                    <a href="/browse?q=${encodeURIComponent(type)}" class="stat-box" title="点击查看 ${type} 类题目" style="text-decoration:none; color:inherit; display:block; transition:transform 0.1s; cursor:pointer;">
                         <div class="stat-num">${data[type]}</div>
                         <div>${type}</div>
-                    </div>
+                    </a>
                 `;
                 }
                 if (!html) html = "<div class='stat-box'>错题池为空</div>";

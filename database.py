@@ -140,6 +140,17 @@ class DatabaseManager:
         conn.close()
         return qid
 
+    def update_question_text(self, qid: int, content: str, options: str, answer: str):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE questions 
+            SET content_html=?, options_html=?, answer_html=?
+            WHERE id=?
+        ''', (content, options, answer, qid))
+        conn.commit()
+        conn.close()
+
     def get_pool_status(self):
         conn = self.get_connection()
         c = conn.cursor()
@@ -153,6 +164,33 @@ class DatabaseManager:
         stats = {row['type']: row['count'] for row in c.fetchall()}
         conn.close()
         return stats
+
+    def get_all_questions(self):
+        """
+        Fetch all questions with source info.
+        """
+        conn = self.get_connection()
+        c = conn.cursor()
+        
+        query = '''
+            SELECT q.*, s.filename as source_filename, m.content_html as material_content
+            FROM questions q
+            JOIN sources s ON q.source_id = s.id
+            LEFT JOIN materials m ON q.material_id = m.id
+            ORDER BY q.id DESC
+        '''
+        
+        c.execute(query)
+        rows = c.fetchall()
+        
+        questions = []
+        for row in rows:
+            q = dict(row)
+            if q.get('images'): q['images'] = json.loads(q['images'])
+            questions.append(q)
+            
+        conn.close()
+        return questions
 
     def get_random_questions(self, count: int, type_filter: List[str] = None):
         """
