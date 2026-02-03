@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>错题回顾卷 - 打印视图</title>
+    <style>
+        body {
+            font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            color: #000;
+            background: #fff;
+            padding: 20px;
+            max-width: 210mm;
+            /* A4 width approx */
+            margin: 0 auto;
+        }
+
+        /* UI Control */
+        .no-print {
+            background: #f1f5f9;
+            padding: 10px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        button {
+            padding: 8px 16px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        /* Paper Layout */
+        h1.main-title {
+            text-align: center;
+            font-size: 18pt;
+            margin-bottom: 15px;
+        }
+
+        h2.section-title {
+            font-size: 14pt;
+            border-bottom: 2px solid #000;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            padding-bottom: 2px;
+        }
+
+        .material-block {
+            background: #f9f9f9;
+            padding: 5px 10px;
+            border-left: 3px solid #666;
+            margin: 5px 0 10px 0;
+            page-break-inside: avoid;
+        }
+
+        .question-block {
+            margin-bottom: 8px;
+            /* Compact */
+            page-break-inside: avoid;
+            font-size: 10.5pt;
+            /* Slightly smaller */
+        }
+
+        .q-stem {
+            font-weight: bold;
+            display: inline;
+        }
+
+        .q-content p {
+            margin: 1px 0;
+            /* Tight lines */
+            line-height: 1.25;
+        }
+
+        .q-options {
+            margin-top: 2px;
+            font-size: 10pt;
+        }
+
+        .q-options p {
+            margin: 0;
+            line-height: 1.2;
+        }
+
+        /* Images */
+        img {
+            max-width: 80%;
+            /* Reduce max width to save vertical space */
+            max-height: 200px;
+            height: auto;
+            display: block;
+            margin: 2px 0;
+        }
+
+        /* Answer Key */
+        .answer-key-section {
+            page-break-before: always;
+            margin-top: 30px;
+        }
+
+        .ans-item {
+            border-bottom: 1px dashed #ccc;
+            padding: 5px 0;
+        }
+
+        @media print {
+            .no-print {
+                display: none;
+            }
+
+            body {
+                padding: 0;
+                max-width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="no-print">
+        <span>请使用浏览器打印功能 (Ctrl+P) 保存为 PDF</span>
+        <button onclick="window.print()">打印</button>
+        <div style="flex:1"></div>
+        <a href="/" style="color:#2563eb">返回首页</a>
+    </div>
+
+    <h1 class="main-title">错题回顾卷</h1>
+    <div style="text-align:center; margin-bottom: 20px; font-size: 0.9em;">
+        生成时间: <span id="gen-date"></span>
+    </div>
+
+    <div id="paper-content">
+        <!-- Questions go here -->
+    </div>
+
+    <div class="answer-key-section">
+        <h1 class="main-title">参考答案与解析</h1>
+        <div id="answer-content">
+            <!-- Answers go here -->
+        </div>
+    </div>
+
+    <script>
+        // Sort Order
+        const TYPE_ORDER = {
+            '常识': 1,
+            '言语': 2,
+            '数量': 3,
+            '判断': 4, // Fallback
+            '图形': 4.1,
+            '定义': 4.2,
+            '类比': 4.3,
+            '逻辑': 4.4,
+            '资料': 5
+        };
+
+        async function loadPaper() {
+            // Get data from localStorage
+            const dataStr = localStorage.getItem('paper_data');
+            if (!dataStr) {
+                alert("无数据，请重新生成");
+                return;
+            }
+            const questions = JSON.parse(dataStr);
+
+            document.getElementById('gen-date').innerText = new Date().toLocaleString();
+
+            // Sort
+            questions.sort((a, b) => {
+                let ta = TYPE_ORDER[a.type] || 99;
+                let tb = TYPE_ORDER[b.type] || 99;
+                if (ta !== tb) return ta - tb;
+                // Secondary sort by material text hash to group materials?
+                // Or primitive check
+                if (a.material_id && b.material_id) return a.material_id - b.material_id;
+                return 0;
+            });
+
+            renderQuestions(questions);
+            renderAnswers(questions);
+        }
+
+        function renderQuestions(questions) {
+            const container = document.getElementById('paper-content');
+            let currentType = null;
+            let lastMaterialId = null;
+            let html = "";
+            let globalIdx = 1;
+
+            questions.forEach(q => {
+                let type = q.type || "其他";
+
+                // 1. Header
+                if (type !== currentType) {
+                    html += `<h2 class="section-title">${type}</h2>`;
+                    currentType = type;
+                    lastMaterialId = null; // Reset material group context
+                }
+
+                // 2. Material
+                // Simple logic: If material exists and different from PREVIOUS Q's material in this sorted list.
+                if (q.material_id && q.material_id !== lastMaterialId) {
+                    if (q.material_content) {
+                        html += `<div class="material-block">
+                            <strong>【资料】</strong>
+                            ${q.material_content}
+                         </div>`;
+                    }
+                    lastMaterialId = q.material_id;
+                } else if (!q.material_id) {
+                    lastMaterialId = null;
+                }
+
+                // 3. Question
+                html += `
+                <div class="question-block">
+                    <div class="q-content">
+                        <span class="q-stem">${globalIdx}. </span>
+                        ${q.content_html}
+                    </div>
+                `;
+
+                if (q.options_html) {
+                    html += `<div class="q-options" style="margin-left: 20px;">${q.options_html}</div>`;
+                }
+
+                html += `</div>`;
+                globalIdx++;
+            });
+
+            container.innerHTML = html;
+        }
+
+        function renderAnswers(questions) {
+            const container = document.getElementById('answer-content');
+            let html = "";
+            questions.forEach((q, idx) => {
+                html += `
+                    <div class="ans-item">
+                        <div><strong>${idx + 1}. </strong></div>
+                        <div>${q.answer_html || '(暂无解析)'}</div>
+                    </div>
+                 `;
+            });
+            container.innerHTML = html;
+        }
+
+        loadPaper();
+    </script>
+</body>
+
+</html>
