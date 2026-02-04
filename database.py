@@ -151,6 +151,19 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
+    def delete_question(self, qid: int):
+        conn = self.get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("DELETE FROM review_stats WHERE question_id=?", (qid,))
+            c.execute("DELETE FROM questions WHERE id=?", (qid,))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
     def get_pool_status(self):
         conn = self.get_connection()
         c = conn.cursor()

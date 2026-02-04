@@ -111,8 +111,63 @@ class PaperBuilder:
             else:
                 p.add_run("（暂无解析）")
                 
+        if questions:
+            self._unify_styles(doc)
+
         doc.save(output_path)
         return output_path
+
+    def _unify_styles(self, doc):
+        """
+        Global format sweeper.
+        Enforces 'Microsoft YaHei', 10.5pt, single spacing for the whole document,
+        while preserving Headings (titles).
+        """
+        from docx.oxml.ns import qn
+        
+        for paragraph in doc.paragraphs:
+            # Detect Heading
+            is_heading = paragraph.style.name.startswith('Heading')
+            
+            # 1. Paragraph Format
+            pf = paragraph.paragraph_format
+            if not is_heading:
+                # Standard body text
+                pf.line_spacing = 1.0
+                pf.space_before = Pt(0)
+                pf.space_after = Pt(0)
+                pf.first_line_indent = None # Reset indent unless specific logic needs it
+                # pf.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT # Optional: force left
+            else:
+                # Keep heading spacing/alignment usually, or enforce specific heading style if needed
+                pass
+
+            # 2. Run Format (Font & Size)
+            for run in paragraph.runs:
+                font = run.font
+                
+                # --- Set Font Family (East Asia & ASCII) ---
+                font.name = 'Microsoft YaHei'
+                # For python-docx to properly set CJK font:
+                rPr = run._element.get_or_add_rPr()
+                # Check if rFonts exists, if not create
+                rFonts = rPr.find(qn('w:rFonts'))
+                if rFonts is None:
+                    rFonts = db_element = rPr.makeelement(qn('w:rFonts'))
+                    rPr.append(rFonts)
+                
+                rFonts.set(qn('w:eastAsia'), 'Microsoft YaHei')
+                rFonts.set(qn('w:ascii'), 'Microsoft YaHei')
+                rFonts.set(qn('w:hAnsi'), 'Microsoft YaHei')
+                
+                # --- Set Font Size ---
+                # Headings usually have their own size in styles, but we can enforce if needed.
+                # Here we strictly enforce body text size.
+                if not is_heading:
+                    font.size = Pt(10.5) # 5 hao
+                else:
+                    # Optional: Could enforce specific heading sizes here
+                    pass
 
     def _add_html_content(self, doc, html_str):
         """Block level adder"""

@@ -244,6 +244,8 @@
                     <button onclick="toggleEdit()" id="btnEdit" class="btn-action btn-edit">✎ Modify Text</button>
                     <button onclick="saveEdit()" id="btnSave" class="btn-action btn-save">💾 Save</button>
                     <button onclick="cancelEdit()" id="btnCancel" class="btn-action btn-cancel">❌ Cancel</button>
+                    <button onclick="deleteQuestion()" class="btn-action"
+                        style="background:#ef4444; color:white; margin-left:20px;">🗑 Delete</button>
                 </div>
                 <span class="close" onclick="closeModal()">&times;</span>
             </div>
@@ -330,13 +332,8 @@
                      <div id="view-stem">${q.content_html}</div>
                      <textarea id="edit-stem" class="edit-area" style="display:none"></textarea>`;
 
-            if (q.images && q.images.length > 0) {
-                html += `<div style="display:flex; gap:10px;">`;
-                q.images.forEach(img => {
-                    html += `<img src="/media/${img}" class="q-img">`;
-                });
-                html += `</div>`;
-            }
+            // Removed separate image loop because q.content_html already embeds them
+
 
             html += `<div class="section-title">Options</div>
                      <div id="view-options">${q.options_html || '<i style="color:#999">No separated options</i>'}</div>
@@ -410,6 +407,26 @@
 
             } catch (e) {
                 alert("Error saving: " + e.message);
+            }
+        }
+
+        async function deleteQuestion() {
+            if (!confirm("Are you sure you want to DELETE this question forever?")) return;
+
+            try {
+                let res = await fetch('/api/question/' + currentQId, { method: 'DELETE' });
+                if (!res.ok) throw new Error("Delete failed");
+
+                alert("Deleted!");
+                closeModal();
+
+                // Remove from local and re-render
+                allQuestions = allQuestions.filter(x => x.id !== currentQId);
+                document.getElementById('count-display').innerText = `Total: ${allQuestions.length}`;
+                renderTable(allQuestions);
+
+            } catch (e) {
+                alert("Error deleting: " + e.message);
             }
         }
 

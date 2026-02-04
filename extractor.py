@@ -25,9 +25,12 @@ class QuestionExtractor:
         )
         # Unified Answer Regex (covers spaces and various formats)
         self.ANSWER_REGEX = re.compile(
-            r'(【\s*答案\s*】|【\s*解析\s*】|【\s*拓展\s*】|【\s*来源\s*】|正确\s*答案|参考\s*答案|答案\s*[:：]|解析\s*[:：])'
+            r'(【\s*答案\s*】|【\s*解析\s*】|【\s*拓展\s*】|【\s*来源\s*】|正确\s*答案|参考\s*答案|答案\s*[:：]?|解析\s*[:：]?)'
         )
-        self.OPTION_PATTERN = re.compile(r'^\s*\(?[A-D]\)?[\.．、\s]')
+        # Option Pattern: Matches Standard (A) or A. or A. space (including fullwidth)
+        # We also need to be careful not to match random english words starting with A. 
+        # But in Chinese exam context, usually single letters at start of line are options.
+        self.OPTION_PATTERN = re.compile(r'^\s*\(?[A-DＡ-Ｄ]\)?[\.．、\s]')
         
         # Current State
         self.current_material_id = None
@@ -57,23 +60,10 @@ class QuestionExtractor:
         Extract images from a block (Paragraph/Table)
         Save to media_dir and return list of filenames.
         """
-        image_paths = []
-        
-        # Access the underlying xml element
-        if isinstance(block, Paragraph):
-            elms = [block._element]
-        elif isinstance(block, Table):
-            elms = []
-            for row in block.rows:
-                for cell in row.cells:
-                    for p in cell.paragraphs:
-                        elms.append(p._element)
-        
-        for elm in elms:
-            pass 
-        return image_paths
+        # (This extracted wrapper was empty in view, but assuming not used or just placeholder)
+        return []
 
-    def _save_image_from_blip(self, doc, blip_rId) -> Optional[str]:
+    def _save_image_from_blip(self, doc, blip_rId, sub_dir=None) -> Optional[str]:
         """
         Internal: Save image binary from blip relationship ID
         """
@@ -93,17 +83,26 @@ class QuestionExtractor:
                 ext = 'png'
             
             filename = f"{uuid.uuid4().hex}.{ext}"
-            filepath = os.path.join(self.media_dir, filename)
+            
+            # Target Dir
+            target_dir = self.media_dir
+            if sub_dir:
+                target_dir = os.path.join(self.media_dir, sub_dir)
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+            
+            filepath = os.path.join(target_dir, filename)
             
             with open(filepath, "wb") as f:
                 f.write(image_part.blob)
             
+            # Return relative path key for reference
             return filename
         except Exception as e:
             print(f"Error saving image {blip_rId}: {e}")
             return None
 
-    def get_block_images(self, doc, block) -> List[str]:
+    def get_block_images(self, doc, block, sub_dir=None) -> List[str]:
         """Real implementation of image extraction for a block"""
         images = []
         try:
@@ -122,7 +121,7 @@ class QuestionExtractor:
                 for blip in blips:
                     rId = blip.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
                     if rId:
-                        fname = self._save_image_from_blip(doc, rId)
+                        fname = self._save_image_from_blip(doc, rId, sub_dir=sub_dir)
                         if fname: images.append(fname)
                         
                 # check v:imagedata
@@ -130,22 +129,22 @@ class QuestionExtractor:
                 for idata in imagedatas:
                     rId = idata.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
                     if rId:
-                        fname = self._save_image_from_blip(doc, rId)
+                        fname = self._save_image_from_blip(doc, rId, sub_dir=sub_dir)
                         if fname: images.append(fname)
                         
             elif isinstance(block, Table):
                 for row in block.rows:
                     for cell in row.cells:
                         for p in cell.paragraphs:
-                            images.extend(self.get_block_images(doc, p))
+                            images.extend(self.get_block_images(doc, p, sub_dir=sub_dir))
         except Exception as e:
             pass
             
         return images
 
-    def block_to_html(self, doc, block, skip_images=False) -> Tuple[str, List[str]]:
+    def block_to_html(self, doc, block, skip_images=False, sub_dir=None) -> Tuple[str, List[str]]:
         """Convert block to simple HTML and extract images"""
-        images = [] if skip_images else self.get_block_images(doc, block)
+        images = [] if skip_images else self.get_block_images(doc, block, sub_dir=sub_dir)
         html = ""
         
         if isinstance(block, Paragraph):
@@ -162,11 +161,15 @@ class QuestionExtractor:
             html = f"<table border='1' cellspacing='0' cellpadding='5'>{''.join(rows)}</table>"
         
         for img in images:
-            html += f'<div class="img-container"><img src="/media/{img}" class="question-img" /></div>'
+            # If temp sub_dir, we must include it in the URL so browser finds it
+            # e.g. /media/temp/uuid.jpg
+            # If not temp, standard /media/uuid.jpg
+            path = f"{sub_dir}/{img}" if sub_dir else img
+            html += f'<div class="img-container"><img src="/media/{path}" class="question-img" /></div>'
                 
         return html, images
 
-    def process_buffer_as_question(self, doc, buffer: List, q_num: int, skip_images=False) -> Dict:
+    def process_buffer_as_question(self, doc, buffer: List, q_num: int, skip_images=False, sub_dir=None) -> Dict:
         """
         Convert a buffer of blocks into structured Question data.
         Separates Stem, Options, and Analysis.
@@ -194,15 +197,11 @@ class QuestionExtractor:
             
             if state < 2:
                 # Direct regex check for options
-                # Matches A. B. C. D. at start of line
-                opt_pattern = r'^\s*\(?[A-D]\)?[\.．、\s]'
-                if re.match(opt_pattern, text):
+                if self.OPTION_PATTERN.match(text):
                     state = 1
 
             # Check Switch to Analysis using Regex
-            # Re-defined pattern string locally to ensure no corruption
-            ans_pattern = r'(【\s*答案\s*】|【\s*解析\s*】|【\s*拓展\s*】|【\s*来源\s*】|正确\s*答案|参考\s*答案|答案\s*[:：]|解析\s*[:：])'
-            ans_match = re.search(ans_pattern, text)
+            ans_match = self.ANSWER_REGEX.search(text)
             
             if ans_match:
                 start_idx = ans_match.start()
@@ -261,18 +260,19 @@ class QuestionExtractor:
                     match = self.Q_PATTERN.match(text)
                     if match:
                         cleaned_text = text[match.end():].strip()
-                        block_imgs = [] if skip_images else self.get_block_images(doc, b)
+                        block_imgs = [] if skip_images else self.get_block_images(doc, b, sub_dir=sub_dir)
                         imgs.extend(block_imgs)
                         
                         h = f"<p>{cleaned_text}</p>" if cleaned_text else ""
                         
                         for img in block_imgs:
-                            h += f'<div class="img-container"><img src="/media/{img}" class="question-img" /></div>'
+                            path = f"{sub_dir}/{img}" if sub_dir else img
+                            h += f'<div class="img-container"><img src="/media/{path}" class="question-img" /></div>'
                         
                         htmls.append(h)
                         continue
                 
-                h, i = self.block_to_html(doc, b, skip_images=skip_images)
+                h, i = self.block_to_html(doc, b, skip_images=skip_images, sub_dir=sub_dir)
                 htmls.append(h)
                 imgs.extend(i)
             return "".join(htmls), imgs
@@ -291,7 +291,7 @@ class QuestionExtractor:
             "material_content": self.current_material_content if self.current_material_content else None
         }
 
-    def extract_from_file(self, docx_path: str, target_ids: List[int] = None, skip_images: bool = False) -> List[Dict]:
+    def extract_from_file(self, docx_path: str, target_ids: List[int] = None, skip_images: bool = False, sub_dir: str = None) -> List[Dict]:
         """
         Main Enty: Parse file and return list of Question Dicts.
         If target_ids is None, return all.
@@ -318,7 +318,7 @@ class QuestionExtractor:
             # 1. Check Header (Material / Type Change)
             if self.HEADER_PATTERN.match(text):
                 if buffer and current_q_num > 0:
-                    q = self.process_buffer_as_question(doc, buffer, current_q_num, skip_images=skip_images)
+                    q = self.process_buffer_as_question(doc, buffer, current_q_num, skip_images=skip_images, sub_dir=sub_dir)
                     if target_ids is None or current_q_num in target_ids:
                          extracted_questions.append(q)
                     
@@ -347,7 +347,7 @@ class QuestionExtractor:
                 self.current_material_content = "" 
                 
                 if "根据" in text or "材料" in text or "阅读" in text:
-                     h, _ = self.block_to_html(doc, block, skip_images=skip_images)
+                     h, _ = self.block_to_html(doc, block, skip_images=skip_images, sub_dir=sub_dir)
                      self.current_material_content += h
                 
                 continue
@@ -379,12 +379,12 @@ class QuestionExtractor:
                 # Process previous
                 if buffer:
                     if current_q_num > 0:
-                        q = self.process_buffer_as_question(doc, buffer, current_q_num, skip_images=skip_images)
+                        q = self.process_buffer_as_question(doc, buffer, current_q_num, skip_images=skip_images, sub_dir=sub_dir)
                         if target_ids is None or current_q_num in target_ids:
                             extracted_questions.append(q)
                     else:
                         for b in buffer:
-                            h, imgs = self.block_to_html(doc, b, skip_images=skip_images)
+                            h, imgs = self.block_to_html(doc, b, skip_images=skip_images, sub_dir=sub_dir)
                             self.current_material_content += h
                 
                 # Start new
@@ -400,12 +400,12 @@ class QuestionExtractor:
                     if not should_skip:
                         buffer.append(block)
                 else:
-                    h, imgs = self.block_to_html(doc, block, skip_images=skip_images)
+                    h, imgs = self.block_to_html(doc, block, skip_images=skip_images, sub_dir=sub_dir)
                     if text or imgs:
                         self.current_material_content += h
 
         if buffer and current_q_num > 0:
-            q = self.process_buffer_as_question(doc, buffer, current_q_num, skip_images=skip_images)
+            q = self.process_buffer_as_question(doc, buffer, current_q_num, skip_images=skip_images, sub_dir=sub_dir)
             if target_ids is None or current_q_num in target_ids:
                 extracted_questions.append(q)
                 

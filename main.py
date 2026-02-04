@@ -11,7 +11,26 @@ from pydantic import BaseModel
 from extractor import QuestionExtractor
 from database import DatabaseManager
 
-app = FastAPI()
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Clean temp dir
+    temp_dir = os.path.join(MEDIA_DIR, "temp")
+    if os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir)
+            os.makedirs(temp_dir)
+            print("Cleaned media/temp directory.")
+        except Exception as e:
+            print(f"Failed to clean temp dir: {e}")
+    else:
+        os.makedirs(temp_dir)
+    
+    yield
+    # Shutdown logic if any
+
+app = FastAPI(lifespan=lifespan)
 
 # ... imports
 # Config
@@ -111,6 +130,42 @@ def update_question(req: UpdateRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/api/question/{qid}")
+def delete_question(qid: int):
+    try:
+        # Get Question Info first to find images
+        # We need a db method for single question or search
+        # Since db.get_all_questions is heavy, let's just use it or add a fetcher.
+        # But for now, let's look at get_all_questions usage.
+        # Actually, let's implement a direct fetch in the endpoint using raw cursor for efficiency or add to DB.
+        # For simplicity/speed without changing DB schema, we can query.
+        
+        conn = db.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT images FROM questions WHERE id=?", (qid,))
+        row = c.fetchone()
+        images_to_delete = []
+        if row and row[0]:
+            try:
+                images_to_delete = json.loads(row[0])
+            except: pass
+        conn.close()
+
+        # Delete FileSystem Images
+        for img in images_to_delete:
+            p = os.path.join(MEDIA_DIR, img)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception as ex:
+                    print(f"Failed to delete {p}: {ex}")
+
+        # Delete DB Record
+        db.delete_question(qid)
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/")
 def read_root():
     return FileResponse(os.path.join(ASSET_DIR, "static/index.html"))
@@ -175,16 +230,9 @@ def extract_preview(req: ExtractRequest):
     elif req.ranges:
         target_ids = parse_ranges(req.ranges)
     
-    if not target_ids:
-         # extraction with empty list usually means "none", but original logic implied "parse_ranges" might result in empty.
-         # If no IDs specified, maybe return error? Or extracting nothing is valid.
-         pass
-
     try:
-        questions = extractor.extract_from_file(file_path, target_ids if target_ids else None)
-        # If target_ids WAS provided but empty list, we should probably return empty
-        # Logic in extractor: "if target_ids is None or current_q_num in target_ids"
-        # So passing [] means "match nothing". passing None means "match all".
+        # Use temp dir for preview images to prevent zombie files
+        questions = extractor.extract_from_file(file_path, target_ids if target_ids else None, sub_dir="temp")
         
         if (req.ids is not None) and len(req.ids) == 0:
              questions = []
@@ -195,22 +243,68 @@ def extract_preview(req: ExtractRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+
 @app.post("/confirm_save")
 def confirm_save(req: SaveRequest):
     # 1. Add Source
     sid = db.add_source(req.source_filename)
     
     # 2. Add Questions & Materials
-    # We need to handle Material deduplication per save batch logic
-    # Ideally, extractor returns material content. We hash it or just add it.
-    
     material_map = {} # content_hash -> mid
     
+    # Helper to move file if exists
+    def move_from_temp(filename):
+        src = os.path.join(MEDIA_DIR, "temp", filename)
+        dst = os.path.join(MEDIA_DIR, filename)
+        if os.path.join(MEDIA_DIR, "temp") in src and os.path.exists(src): # basic safety
+            try:
+                shutil.move(src, dst)
+            except Exception as e:
+                print(f"Error moving {filename}: {e}")
+
+    # Helper to fix HTML
+    def fix_html_paths(html):
+        if not html: return html
+        return html.replace("/media/temp/", "/media/")
+
     count = 0
     for q in req.questions:
+        # 1. Move physical files based on the authoritative 'images' list
+        if q.get('images'):
+            for img in q['images']:
+                # img is just filename (uuid.png)
+                move_from_temp(img)
+        
+        # 2. Update HTML content strings (Simple replacement is safer/faster than regex)
+        q['content_html'] = fix_html_paths(q['content_html'])
+        q['options_html'] = fix_html_paths(q['options_html'])
+        q['answer_html'] = fix_html_paths(q['answer_html'])
+
+        # Material handling
         mid = None
         mat_content = q.get('material_content')
         if mat_content:
+            # Process material images too!
+            # We don't have a separate images list for material easily accessible here
+            # without parsing. But usually material images appear in questions list too?
+            # Actually Extractor might not put material images in q['images']?
+            # Let's check Extractor.
+            # Extractor: images = stem + opt + ana. Material not included.
+            # So we rely on regex/parsing for material images? 
+            # OR we try to find them.
+            # For now, let's use the REPLACE logic. Main issue is physical file move.
+            # If we don't know the filename, we can't move it unless we parse HTML.
+            
+            # Fallback: Parse material HTML for /media/temp/ filenames
+            import re
+            mat_temp_imgs = re.findall(r'/media/temp/([\w\-\.]+\.\w+)', mat_content)
+            for img in mat_temp_imgs:
+                move_from_temp(img)
+            
+            mat_content = fix_html_paths(mat_content)
+            
             mat_hash = hash(mat_content)
             if mat_hash in material_map:
                 mid = material_map[mat_hash]
@@ -218,16 +312,12 @@ def confirm_save(req: SaveRequest):
                 mid = db.add_material(sid, mat_content, type=q['type'])
                 material_map[mat_hash] = mid
         
-        # Debug Log
-        if count < 5:
-            print(f"DEBUG: Saving Q {q.get('original_num')}, Options Len: {len(q.get('options_html') or '')}, Type: {q.get('type')}")
-
         db.add_question(
             source_id=sid,
             original_num=q['original_num'],
             content=q['content_html'],
             options=q['options_html'],
-            answer=q['answer_html'], # Contains Analysis
+            answer=q['answer_html'], 
             images=q['images'],
             type=q['type'],
             material_id=mid
@@ -235,6 +325,8 @@ def confirm_save(req: SaveRequest):
         count += 1
         
     return {"status": "success", "saved_count": count}
+
+
 
 @app.get("/pool_status")
 def pool_status():
