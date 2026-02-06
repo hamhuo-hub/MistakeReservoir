@@ -220,6 +220,103 @@
         .theme-btn:hover {
             transform: scale(1.1);
         }
+
+        /* Stats Styles */
+        .chart-container {
+            margin-top: 10px;
+            height: 200px;
+            width: 100%;
+            position: relative;
+            background: whitesmoke;
+            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+            overflow: hidden;
+            display: flex;
+            align-items: flex-end;
+            padding: 10px 20px;
+            box-sizing: border-box;
+        }
+
+        .bar-chart-bar {
+            flex: 1;
+            margin: 0 2px;
+            background: #93c5fd;
+            transition: 0.2s;
+            position: relative;
+        }
+
+        .bar-chart-bar:hover {
+            background: #2563eb;
+        }
+
+        .bar-tooltip {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+            display: none;
+            z-index: 10;
+        }
+
+        .bar-chart-bar:hover .bar-tooltip {
+            display: block;
+        }
+
+        .heatmap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 2px;
+            margin-bottom: 30px;
+        }
+
+        .day-square {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            background: #e2e8f0;
+            position: relative;
+        }
+
+        .day-square:hover::after {
+            content: attr(data-title);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+            z-index: 10;
+        }
+
+        .level-0 {
+            background: #e2e8f0;
+        }
+
+        .level-1 {
+            background: #bbf7d0;
+        }
+
+        .level-2 {
+            background: #86efac;
+        }
+
+        .level-3 {
+            background: #4ade80;
+        }
+
+        .level-4 {
+            background: #22c55e;
+        }
     </style>
 </head>
 
@@ -290,6 +387,31 @@
                 </button>
             </div>
             <div class="preview-list" id="previewList"></div>
+        </div>
+
+        <div class="card">
+            <h2>📈 学习统计</h2>
+
+            <div style="font-size:12px; font-weight:bold; color:#64748b; margin-bottom:5px;">打卡记录 (Exam Activity)</div>
+            <div id="heatmap" class="heatmap"></div>
+
+            <div style="display:flex; gap:20px;">
+                <div style="flex:1;">
+                    <div style="font-size:12px; font-weight:bold; color:#64748b; margin-bottom:5px;">正确率趋势 (Accuracy
+                        Trend)</div>
+                    <div id="accChart" class="chart-container">
+                        <!-- Bars injected here -->
+                    </div>
+                </div>
+                <div style="flex:1;">
+                    <div style="font-size:12px; font-weight:bold; color:#64748b; margin-bottom:5px;">近期练习记录 (Recent
+                        Exams)</div>
+                    <div id="examList"
+                        style="height:200px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:6px; padding:10px;">
+
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -547,11 +669,12 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         source_filename: currentFilename,
-                        questions: extractedData
+                        questions: extractedData,
+                        all_questions_meta: availableQuestions
                     })
                 });
                 let data = await res.json();
-                alert("成功入库 " + data.saved_count + " 题!");
+                alert("成功入库 " + data.saved_count + " 题! 统计数据已更新。");
                 location.reload();
             } catch (err) {
                 alert("保存失败");
@@ -612,7 +735,86 @@
             } catch (e) { console.log(e); }
         }
 
+        async function loadExamStats() {
+            try {
+                let res = await fetch('/api/exam_stats');
+                let data = await res.json();
+                renderExamStats(data.stats);
+            } catch (e) {
+                console.error("Failed to load exam stats", e);
+            }
+        }
+
+        function renderExamStats(stats) {
+            // 1. Heatmap (Activity)
+            let heatmap = document.getElementById('heatmap');
+            heatmap.innerHTML = "";
+            let today = new Date();
+            let dateMap = {};
+            stats.forEach(s => {
+                let d = s.upload_date.split('T')[0];
+                if (!dateMap[d]) dateMap[d] = 0;
+                dateMap[d]++; // Count uploads per day
+            });
+
+            // 364 days
+            for (let i = 364; i >= 0; i--) {
+                let d = new Date();
+                d.setDate(today.getDate() - i);
+                let dStr = d.toISOString().split('T')[0];
+                let count = dateMap[dStr] || 0;
+
+                let level = 0;
+                if (count > 0) level = 1;
+                if (count > 2) level = 2;
+                if (count > 5) level = 3;
+
+                let div = document.createElement("div");
+                div.className = `day-square level-${level}`;
+                div.setAttribute('data-title', `${dStr}: ${count} Exams`);
+                heatmap.appendChild(div);
+            }
+
+            // 2. Trend Chart (Accuracy)
+            let chart = document.getElementById('accChart');
+            chart.innerHTML = "";
+            // Take last 20 records
+            let recent = stats.slice(-20);
+            recent.forEach(s => {
+                let h = s.total_accuracy; // 0-100
+                let bar = document.createElement("div");
+                bar.className = "bar-chart-bar";
+                bar.style.height = `${h}%`;
+                bar.innerHTML = `<div class="bar-tooltip">${s.upload_date.split('T')[0]}<br>Acc: ${h.toFixed(1)}%<br>Score: ${s.total_score.toFixed(1)}</div>`;
+                chart.appendChild(bar);
+            });
+
+            // 3. List
+            let list = document.getElementById('examList');
+            let listHtml = "";
+            [...stats].reverse().slice(0, 50).forEach(s => {
+                listHtml += `
+                    <div style="padding:8px; border-bottom:1px solid #f1f5f9; font-size:12px;">
+                        <div style="font-weight:bold; color:#334155;">${s.filename}</div>
+                        <div style="display:flex; justify-content:space-between; margin-top:2px;">
+                            <span style="color:#64748b">${s.upload_date.split('T')[0]}</span>
+                            <span style="color:${s.total_accuracy > 80 ? '#16a34a' : '#ea580c'}">Sc: ${s.total_score.toFixed(1)} | ${s.total_accuracy.toFixed(1)}%</span>
+                        </div>
+                    </div>
+                `;
+            });
+            if (stats.length === 0) listHtml = "<div style='color:#999; text-align:center; padding:20px;'>No records yet. Upload a mistake paper to start tracking!</div>";
+            list.innerHTML = listHtml;
+        }
+
         loadStats();
+        loadExamStats();
+    </script>
+    <script>
+        // Heartbeat to keep server alive
+        setInterval(() => {
+            fetch('/api/heartbeat', { method: 'POST' }).catch(() => { });
+        }, 1000);
     </script>
 </body>
 

@@ -196,6 +196,125 @@
             color: white;
             display: none;
         }
+
+        /* Stats Section */
+        .stats-container {
+            margin-top: 40px;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        .stats-header {
+            font-size: 18px;
+            font-weight: 600;
+            color: #334155;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #f1f5f9;
+            padding-bottom: 10px;
+        }
+
+        /* Heatmap */
+        .heatmap {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-bottom: 30px;
+        }
+
+        .day-square {
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            background: #e2e8f0;
+            position: relative;
+        }
+
+        .day-square:hover::after {
+            content: attr(data-date) ": " attr(data-score);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            white-space: nowrap;
+            z-index: 10;
+        }
+
+        .level-0 {
+            background: #e2e8f0;
+        }
+
+        .level-1 {
+            background: #bbf7d0;
+        }
+
+        .level-2 {
+            background: #86efac;
+        }
+
+        .level-3 {
+            background: #4ade80;
+        }
+
+        .level-4 {
+            background: #22c55e;
+        }
+
+        /* Log Form */
+        .log-form {
+            background: #f8fafc;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group label {
+            font-size: 11px;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+
+        .form-group input {
+            padding: 6px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            width: 60px;
+        }
+
+        .form-group input.date-input {
+            width: 120px;
+        }
+
+        .btn-log {
+            background: #2563eb;
+            color: white;
+            padding: 8px 20px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            height: 30px;
+        }
+
+        .stat-val {
+            font-weight: bold;
+            color: #334155;
+        }
     </style>
 </head>
 
@@ -233,6 +352,51 @@
                 </table>
             </div>
         </div>
+    </div>
+
+    <!-- Stats Section -->
+    <div class="stats-container">
+        <div class="stats-header">Daily Performance Log</div>
+
+        <!-- Heatmap -->
+        <div style="font-size:12px; color:#64748b; margin-bottom:5px;">Activity (Last 365 Days)</div>
+        <div class="heatmap" id="heatmap"></div>
+
+        <!-- Input Form -->
+        <div class="log-form">
+            <div class="form-group">
+                <label>Date</label>
+                <input type="date" id="logDate" class="date-input">
+            </div>
+
+            <!-- Modules -->
+            <div id="moduleInputs" style="display:contents;">
+                <!-- Injected via JS -->
+            </div>
+
+            <button onclick="saveDailyLog()" class="btn-log">Log Records</button>
+        </div>
+
+        <!-- History Table -->
+        <div style="font-size:14px; font-weight:bold; margin-bottom:10px;">History</div>
+        <div style="overflow-x: auto;">
+            <table id="statsTable">
+                <thead>
+                    <tr>
+                        <th width="100">Date</th>
+                        <th width="80">Score</th>
+                        <th width="80">Accuracy</th>
+                        <th>Verbal</th>
+                        <th>Quant</th>
+                        <th>Judgment</th>
+                        <th>Data</th>
+                        <th>Const</th>
+                    </tr>
+                </thead>
+                <tbody id="statsBody"></tbody>
+            </table>
+        </div>
+    </div>
     </div>
 
     <!-- Modal -->
@@ -288,7 +452,23 @@
                 tmp.innerHTML = q.content_html;
                 let text = tmp.textContent || tmp.innerText || "";
 
-                if (search && !text.toLowerCase().includes(search) && !q.type.includes(search)) return;
+                if (search) {
+                    // Check if search term is a standard category (Logic, Verbal, etc.)
+                    // If exact match on category name, we filter strictly by type.
+                    const categories = ["常识", "言语", "数量", "判断", "资料", "逻辑"];
+                    // Note: "Logic" (逻辑) is often a subset or synonym for "Judgment" (判断) in some contexts, 
+                    // but here we treat it as user input.
+
+                    let isCategorySearch = categories.some(c => search === c);
+
+                    if (isCategorySearch) {
+                        // Strict Type Match
+                        if (!q.type.includes(search)) return;
+                    } else {
+                        // Broad Search (Text OR Type)
+                        if (!text.toLowerCase().includes(search) && !q.type.includes(search)) return;
+                    }
+                }
 
                 html += `
                     <tr onclick="showDetail(${q.id})">
@@ -440,7 +620,154 @@
             }
         }
 
+        async function loadDailyStats() {
+            try {
+                let res = await fetch('/api/daily_stats');
+                let data = await res.json();
+                renderStats(data.stats);
+            } catch (e) {
+                console.error("Failed to load stats", e);
+            }
+        }
+
+        const MODULES = ["言语", "数量", "判断", "资料", "常识"];
+
+        function initForm() {
+            // Set Today
+            try {
+                document.getElementById('logDate').value = new Date().toISOString().split('T')[0];
+            } catch (e) { }
+
+            let html = "";
+            MODULES.forEach(m => {
+                html += `
+                    <div class="form-group" style="margin-right:10px;">
+                        <label>${m} (Corr/Tot)</label>
+                        <div style="display:flex; gap:2px;">
+                            <input type="number" id="corr_${m}" placeholder="0" min="0">
+                            <span style="align-self:center;">/</span>
+                            <input type="number" id="tot_${m}" placeholder="0" min="0">
+                        </div>
+                    </div>
+                `;
+            });
+            document.getElementById('moduleInputs').innerHTML = html;
+        }
+
+        function renderStats(stats) {
+            // 1. Heatmap
+            let heatmap = document.getElementById('heatmap');
+            heatmap.innerHTML = "";
+
+            // Generate last 365 days
+            let today = new Date();
+            let mapData = {};
+            stats.forEach(s => mapData[s.date] = s);
+
+            // Simple loop for 365 days backwards (rendered forwards)
+            // But usually heatmap is left-to-right, past-to-future.
+            // Let's do 52 weeks * 7 = 364 days.
+            let days = [];
+            for (let i = 364; i >= 0; i--) {
+                let d = new Date();
+                d.setDate(today.getDate() - i);
+                let dateStr = d.toISOString().split('T')[0];
+                days.push(dateStr);
+            }
+
+            days.forEach(date => {
+                let rec = mapData[date];
+                let level = 0;
+                let score = "No Data";
+
+                if (rec) {
+                    score = `Score: ${rec.total_score.toFixed(1)}`;
+                    if (rec.total_score > 0) level = 1;
+                    if (rec.total_score > 60) level = 2;
+                    if (rec.total_score > 70) level = 3;
+                    if (rec.total_score > 80) level = 4;
+                }
+
+                let sq = document.createElement("div");
+                sq.className = `day-square level-${level}`;
+                sq.setAttribute('data-date', date);
+                sq.setAttribute('data-score', score);
+                sq.title = `${date}\n${score}`;
+                heatmap.appendChild(sq);
+            });
+
+            // 2. Table (Reverse Chronological)
+            let tbody = document.getElementById('statsBody');
+            let html = "";
+            let sorted = [...stats].reverse(); // newest first
+
+            sorted.forEach(s => {
+                let cols = MODULES.map(m => {
+                    let d = s.data_json[m];
+                    if (!d || d.total == 0) return `<span style="color:#ccc">-</span>`;
+                    let acc = (d.correct / d.total * 100).toFixed(0);
+                    return `<div><span class="stat-val">${acc}%</span> <span style="font-size:10px;color:#999">(${d.correct}/${d.total})</span></div>`;
+                }).join("</td><td>");
+
+                html += `
+                    <tr>
+                        <td>${s.date}</td>
+                        <td style="font-size:15px; color:#2563eb; font-weight:bold;">${s.total_score.toFixed(1)}</td>
+                        <td>${s.total_accuracy.toFixed(1)}%</td>
+                        <td>${cols}</td>
+                    </tr>
+                `;
+            });
+            tbody.innerHTML = html;
+        }
+
+        async function saveDailyLog() {
+            let date = document.getElementById('logDate').value;
+            if (!date) return alert("Please select a date");
+
+            let data = {};
+            MODULES.forEach(m => {
+                let c = parseInt(document.getElementById(`corr_${m}`).value) || 0;
+                let t = parseInt(document.getElementById(`tot_${m}`).value) || 0;
+                if (t > 0) {
+                    data[m] = { correct: c, total: t };
+                }
+            });
+
+            if (Object.keys(data).length === 0) return alert("Please enter at least one module record");
+
+            try {
+                let res = await fetch('/api/daily_stats', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ date: date, data: data })
+                });
+
+                if (!res.ok) throw new Error("Failed to save");
+
+                alert("Saved!");
+                loadDailyStats(); // Refresh
+
+                // Clear inputs? Maybe keep date
+                MODULES.forEach(m => {
+                    document.getElementById(`corr_${m}`).value = '';
+                    document.getElementById(`tot_${m}`).value = '';
+                });
+
+            } catch (e) {
+                alert("Error: " + e.message);
+            }
+        }
+
+        initForm();
         loadData();
+        loadDailyStats();
+    </script>
+    <script>
+        // Heartbeat to keep server alive
+        setInterval(() => {
+            fetch('/api/heartbeat', { method: 'POST' }).catch(() => { });
+        }, 1000);
     </script>
 </body>
 

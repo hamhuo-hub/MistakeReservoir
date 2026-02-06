@@ -12,7 +12,7 @@ echo [INFO] Converting icon...
 python -c "from PIL import Image; Image.open('approved.png').save('approved.ico', format='ICO', sizes=[(256, 256)])"
 
 echo [INFO] Starting PyInstaller build...
-pyinstaller --noconfirm --onefile --name "MistakeReservoir" --icon "approved.ico" --add-data "static;static" main.py
+pyinstaller --noconfirm --noconsole --onefile --name "MistakeReservoir" --icon "approved.ico" --add-data "static;static" main.py
 
 echo [INFO] Build complete! Executable is located in the 'dist' folder.
 pause

@@ -1,10 +1,18 @@
+# Python
 *.pyc
-/_internal
-/media
-/uploads
-/build
+__pycache__/
+.venv/
+.idea/
+
+# Build
 /build
 /dist
-/build/MistakeReservoir
-/build
+*.spec
+
+# Data
+/media
+/uploads
+reservoir.db
+
+# Other
 *.toc

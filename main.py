@@ -5,7 +5,7 @@ import shutil
 import os
 import uvicorn
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pydantic import BaseModel
 
 from extractor import QuestionExtractor
@@ -34,7 +34,33 @@ app = FastAPI(lifespan=lifespan)
 
 # ... imports
 # Config
+import threading
+import time
+import webbrowser
+
+# ... imports
+# Config
 import sys
+
+# Heartbeat Monitor
+# Last heartbeat time
+last_heartbeat = time.time()
+
+@app.post("/api/heartbeat")
+def heartbeat():
+    global last_heartbeat
+    last_heartbeat = time.time()
+    return {"status": "ok"}
+
+def monitor_heartbeat():
+    global last_heartbeat
+    print("Heartbeat monitor started...")
+    while True:
+        time.sleep(1)
+        # If no heartbeat for > 3 seconds, exit
+        if time.time() - last_heartbeat > 3:
+            print("No heartbeat detected. Shutting down...")
+            os._exit(0)
 
 if getattr(sys, 'frozen', False):
     # Running as compiled exe
@@ -113,8 +139,7 @@ class ExtractRequest(BaseModel):
 class SaveRequest(BaseModel):
     source_filename: str
     questions: List[dict]
-
-
+    all_questions_meta: List[dict] # {num, type} for stats calculation
 
 class UpdateRequest(BaseModel):
     id: int
@@ -163,6 +188,14 @@ def delete_question(qid: int):
         # Delete DB Record
         db.delete_question(qid)
         return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/exam_stats")
+def get_exam_stats():
+    try:
+        stats = db.get_exam_stats()
+        return {"count": len(stats), "stats": stats}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -324,6 +357,64 @@ def confirm_save(req: SaveRequest):
         )
         count += 1
         
+    # --- Stats Calculation ---
+    try:
+        # Weights
+        WEIGHTS = {
+            "常识": 0.5,
+            "言语": 0.8,
+            "数量": 0.8,
+            "判断": 0.7,
+            "资料": 1.0,
+            # Subtypes just in case
+            "图形": 0.7, "定义": 0.7, "类比": 0.7, "逻辑": 0.7
+        }
+
+        mistake_nums = set(q['original_num'] for q in req.questions)
+        
+        module_stats = {} # {"Verbal": {correct: 0, total: 0}}
+        total_score = 0.0
+        total_questions = 0
+        total_correct = 0
+
+        for q in req.all_questions_meta:
+            q_type = q.get('type', '未知')
+            
+            # Find Standard Module Name (grouping subtypes)
+            module_name = "未知"
+            if "常识" in q_type: module_name = "常识"
+            elif "言语" in q_type: module_name = "言语"
+            elif "数量" in q_type: module_name = "数量"
+            elif "资料" in q_type: module_name = "资料"
+            elif any(x in q_type for x in ["判断", "图形", "定义", "类比", "逻辑"]): module_name = "判断"
+
+            # Init Module Entry
+            if module_name not in module_stats:
+                module_stats[module_name] = {"correct": 0, "total": 0}
+            
+            is_mistake = q['num'] in mistake_nums
+            
+            # Update Total
+            module_stats[module_name]["total"] += 1
+            total_questions += 1
+            
+            # Update Correct & Score
+            if not is_mistake:
+                module_stats[module_name]["correct"] += 1
+                total_correct += 1
+                
+                # Add Score
+                w = WEIGHTS.get(module_name, 0.5) # Default 0.5 for unknown
+                total_score += w
+
+        total_accuracy = (total_correct / total_questions * 100) if total_questions > 0 else 0.0
+        
+        db.add_exam_record(req.source_filename, total_score, total_accuracy, module_stats)
+        
+    except Exception as e:
+        print(f"Stats Calculation Failed: {e}")
+        # Non-blocking, still return success for saving
+
     return {"status": "success", "saved_count": count}
 
 
@@ -344,4 +435,26 @@ def browse_page():
 
 # To run: uvicorn main:app --reload
 if __name__ == "__main__":
+    
+    # 1. Start Heartbeat Monitor
+    t = threading.Thread(target=monitor_heartbeat, daemon=True)
+    t.start()
+    
+    # 2. Open Browser
+    # Wait a bit for server to start? Uvicorn blocks, so we need to start browser slightly delayed or before
+    # threading.run() blocks.
+    # Actually uvicorn.run will block. We should launch browser in a separate thread delay.
+    def open_browser():
+        time.sleep(1.5)
+        webbrowser.open("http://127.0.0.1:8000")
+    
+    msg_thread = threading.Thread(target=open_browser, daemon=True)
+    msg_thread.start()
+    
+    # Fix for PyInstaller --noconsole mode where sys.stdout/stderr are None
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+    
     uvicorn.run(app, host="127.0.0.1", port=8000)

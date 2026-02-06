@@ -65,6 +65,18 @@ class DatabaseManager:
                 FOREIGN KEY(question_id) REFERENCES questions(id)
             )
         ''')
+
+        # Exam Records (Auto-Calculated from Uploads)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exam_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                upload_date TEXT, -- ISO Timestamp
+                filename TEXT,
+                total_score REAL,
+                total_accuracy REAL,
+                module_stats TEXT -- JSON breakdown
+            )
+        ''')
         
         conn.commit()
         conn.close()
@@ -359,6 +371,35 @@ class DatabaseManager:
             print(f"Error migrating database: {e}")
         finally:
             conn.close()
+
+    def add_exam_record(self, filename: str, total_score: float, total_accuracy: float, module_stats: dict) -> int:
+        conn = self.get_connection()
+        c = conn.cursor()
+        
+        c.execute('''
+            INSERT INTO exam_records (upload_date, filename, total_score, total_accuracy, module_stats)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (datetime.now().isoformat(), filename, total_score, total_accuracy, json.dumps(module_stats)))
+        
+        sid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return sid
+
+    def get_exam_stats(self):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM exam_records ORDER BY upload_date ASC")
+        rows = c.fetchall()
+        
+        results = []
+        for row in rows:
+            r = dict(row)
+            if r.get('module_stats'): r['module_stats'] = json.loads(r['module_stats'])
+            results.append(r)
+            
+        conn.close()
+        return results
 
 if __name__ == "__main__":
     import argparse
