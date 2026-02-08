@@ -111,8 +111,8 @@ async def generate_paper(req: GenerateRequest):
     # 3. Generate Doc
     from generator import PaperBuilder
     generator = PaperBuilder(MEDIA_DIR) # Assuming generator is an instance of PaperBuilder
-    filename = f"Paper_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
-    output_path = os.path.join("temp", filename)
+    filename_base = f"Paper_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
+    output_path_base = os.path.join("temp", filename_base)
     os.makedirs("temp", exist_ok=True)
     
     # Process images for docx
@@ -132,10 +132,19 @@ async def generate_paper(req: GenerateRequest):
                 q['images_abs'] = [os.path.join(MEDIA_DIR, img) for img in imgs]
             except: pass
 
-    generator.create_paper(questions, output_path, paper_uuid=paper_uuid)
+    generated_files = generator.create_paper(questions, output_path_base, paper_uuid=paper_uuid)
     
-    return FileResponse(output_path, filename=filename)
-    return HTTPException(404, "File not found")
+    # Zip them
+    import zipfile
+    zip_filename = filename_base.replace(".docx", ".zip")
+    zip_path = os.path.join("temp", zip_filename)
+    
+    with zipfile.ZipFile(zip_path, 'w') as zf:
+        for fpath in generated_files:
+            if os.path.exists(fpath):
+                zf.write(fpath, os.path.basename(fpath))
+                
+    return FileResponse(zip_path, filename=zip_filename)
 
 # Mount Static
 app.mount("/static", StaticFiles(directory=os.path.join(ASSET_DIR, "static")), name="static")
@@ -154,6 +163,7 @@ class SaveRequest(BaseModel):
     source_filename: str
     questions: List[dict]
     all_questions_meta: List[dict] # {num, type} for stats calculation
+    paper_uuid: Optional[str] = None # Added for review mode
 
 class UpdateRequest(BaseModel):
     id: int
@@ -263,60 +273,70 @@ def analyze_file(req: AnalyzeRequest):
         # Continue to standard extraction if fails (might be PDF or other format)
 
     if paper_uuid:
-        # --- REVIEW MODE ---
+        # --- REVIEW MODE (Manual Selection) ---
+        # Instead of auto-processing, we fetch the questions and return them to the FE
+        # so the user can SELECT which ones they got wrong.
         try:
             qids = db.get_generated_paper_qids(paper_uuid)
             if not qids:
                  return JSONResponse(status_code=404, content={"message": f"Paper ID {paper_uuid} not found locally."})
 
-            # Fetch Original Questions for Matching
+            # Fetch existing questions
+            # We want them to look like "imported" questions but with IDs preserved
             import sqlite3
             conn = db.get_connection()
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
-            c.execute(f"SELECT id, content_html FROM questions WHERE id IN ({','.join(['?']*len(qids))})", qids)
+            
+            # Use a bespoke query to get material content as well, similar to extractor
+            # We need standard fields: content_html, type, etc.
+            # And we need to ensure images are parsed if they are stored as JSON strings
+            
+            query = f'''
+                SELECT q.*, s.filename as source_filename, m.content_html as material_content
+                FROM questions q
+                LEFT JOIN sources s ON q.source_id = s.id
+                LEFT JOIN materials m ON q.material_id = m.id
+                WHERE q.id IN ({','.join(['?']*len(qids))})
+            '''
+            c.execute(query, qids)
             rows = c.fetchall()
+            
+            questions_data = []
+            for row in rows:
+                q = dict(row)
+                if q.get('images'): 
+                    try:
+                        q['images'] = json.loads(q['images'])
+                    except:
+                        q['images'] = []
+                questions_data.append(q)
             conn.close()
 
-            # Normalization Helper
-            import re
-            from bs4 import BeautifulSoup
-            def normalize(text):
-                return re.sub(r'\s+', '', text)
+            # Re-sort questions to match the order in 'qids' (the generated paper order)
+            questions_map = {q['id']: q for q in questions_data}
+            sorted_questions = []
+            for i, qid in enumerate(qids):
+                if qid in questions_map:
+                    q = questions_map[qid]
+                    # Overwrite numbering to be sequential (1, 2, 3...) for the Review Grid
+                    # This matches the "Question 1, Question 2" user sees in the uploaded DOCX
+                    q['original_num'] = i + 1
+                    q['num'] = i + 1
+                    sorted_questions.append(q)
 
-            original_map = {} 
-            for r in rows:
-                soup = BeautifulSoup(r['content_html'], 'html.parser')
-                text = soup.get_text()
-                norm = normalize(text)
-                if len(norm) > 5: 
-                    original_map[norm] = r['id']
-            
-            # Read Upload Content (Text Only)
-            full_doc_text = normalize("\n".join([p.text for p in doc.paragraphs]))
-            
-            wrong_qids = []
-            for norm_text, qid in original_map.items():
-                if norm_text in full_doc_text:
-                    wrong_qids.append(qid)
-            
-            # Update Stats
-            stats = db.process_review_results(wrong_qids, qids)
-            
             return {
-                "type": "review",
+                "type": "review_import", # New type to signal frontend
                 "data": {
-                    "paper_id": paper_uuid,
-                    "total_questions": len(qids),
-                    "wrong_count": len(wrong_qids),
-                    "right_count": len(qids) - len(wrong_qids),
-                    "stats_update": stats
+                    "paper_uuid": paper_uuid,
+                    "questions": sorted_questions
                 }
             }
         except Exception as e:
             import traceback
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Review processing failed: {str(e)}")
+
 
     # --- 2. Standard Extraction Mode (Import) ---
     try:
@@ -364,7 +384,23 @@ def extract_preview(req: ExtractRequest):
 
 @app.post("/confirm_save")
 def confirm_save(req: SaveRequest):
-    # 1. Add Source
+    # 0. Check for Review Mode
+    if req.paper_uuid:
+        # Review Mode Logic
+        # req.questions contains the SELECTED (Wrong) questions.
+        # We need to fetch ALL questions from this paper to find the RIGHT ones.
+        all_paper_qids = db.get_generated_paper_qids(req.paper_uuid)
+        if not all_paper_qids:
+             # Should not happen unless DB wiped
+             return {"status": "error", "message": "Paper not found"}
+        
+        wrong_qids = [q['id'] for q in req.questions if q.get('id')]
+        
+        stats = db.process_review_results(wrong_qids, all_paper_qids)
+        
+        return {"status": "success", "review_stats": stats, "saved_count": len(wrong_qids)}
+
+    # 1. Add Source (Normal Import)
     sid = db.add_source(req.source_filename)
     
     # 2. Add Questions & Materials

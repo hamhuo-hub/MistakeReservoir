@@ -54,17 +54,29 @@ class DatabaseManager:
             )
         ''')
         
-        # Review Stats (The Reservoir State)
+        # Review Stats (NEW SCHEMA)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS review_stats (
                 question_id INTEGER PRIMARY KEY,
-                status TEXT DEFAULT 'pool', -- pool, archived
-                mistake_count INTEGER DEFAULT 1,
-                right_streak INTEGER DEFAULT 0, -- Consecutive correct answers
+                status TEXT DEFAULT 'pool',
+                mistake_count INTEGER DEFAULT 2,
                 last_wrong_date TEXT,
                 last_right_date TEXT,
-                FOREIGN KEY(question_id) REFERENCES questions(id)
+                FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
             )
+        ''')
+        
+        # Add Trigger via Python if not exists?
+        # Ideally schema init should include it.
+        # But our migration script already added it.
+        # For new installs:
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS auto_delete_mastered
+            AFTER UPDATE OF mistake_count ON review_stats
+            WHEN NEW.mistake_count <= 0
+            BEGIN
+                DELETE FROM questions WHERE id = NEW.question_id;
+            END;
         ''')
         
         # Check if right_streak exists (Migration for existing DB)

@@ -487,6 +487,7 @@
         let extractedData = [];
         let availableQuestions = []; // [{num, type}]
         let selectedIds = new Set();
+        let currentPaperUUID = null; // Store paper UUID for review mode
 
         // Theme Config
         const THEMES = {
@@ -581,27 +582,42 @@
 
                 let response = await res.json();
 
-                // --- REVIEW MODE ---
-                if (response.type === 'review') {
-                    document.getElementById('gridPanel').style.display = 'none'; // Hide grid
+                // --- REVIEW IMPORT MODE (New) ---
+                if (response.type === 'review_import') {
+                    // Similar to import, but we need to track UUID
                     let data = response.data;
+                    currentPaperUUID = data.paper_uuid;
+                    let questions = data.questions;
 
-                    let msg = `复习分析完成!\n`;
-                    msg += `试卷ID: ${data.paper_id.substring(0, 8)}...\n`;
-                    msg += `总题数: ${data.total_questions}\n`;
-                    msg += `错题 (保留): ${data.wrong_count}\n`;
-                    msg += `做对 (删除): ${data.right_count}\n\n`;
-                    msg += `统计更新:\n`;
-                    msg += `- 再次错误: ${data.stats_update.mistakes}\n`;
-                    msg += `- 正确巩固: ${data.stats_update.improved}\n`;
-                    msg += `- 达到标准归档: ${data.stats_update.archived}`;
+                    // User needs to Select MISTAKES (Wrong answers)
+                    // We treat them identically to import questions in the grid
+                    // But maybe we should label the UI differently?
+                    document.getElementById('gridPanel').style.display = 'block';
+                    // Clear previous grid title for clarity
+                    document.querySelector('#gridPanel label').innerText = "请选择错题 (Select Mistakes):";
 
-                    alert(msg);
-                    loadStats();
+                    if (!questions || questions.length === 0) {
+                        document.getElementById('qGrid').innerHTML = '<div style="padding:20px; text-align:center;">未找到题目</div>';
+                        return;
+                    }
+
+                    availableQuestions = questions;
+                    availableQuestions.sort((a, b) => (a.original_num || a.num) - (b.original_num || b.num));
+
+                    renderGrid();
+                    return;
+                }
+
+                // --- OLD REVIEW MODE (Deprecated in backend but kept for safety?) ---
+                if (response.type === 'review') {
+                    // Logic was removed/changed in backend, so this might not be hit
+                    alert("Unexpected review response type.");
                     return;
                 }
 
                 // --- IMPORT MODE ---
+                currentPaperUUID = null; // Reset
+                document.querySelector('#gridPanel label').innerText = "请选择题目:";
                 let questions = response.data; // questions list
                 if (!questions || questions.length === 0) {
                     document.getElementById('qGrid').innerHTML = '<div style="padding:20px; text-align:center;">未找到题目</div>';
@@ -762,17 +778,31 @@
             if (!confirm("确认将这 " + extractedData.length + " 道题加入错题池?")) return;
 
             try {
+                let payload = {
+                    source_filename: currentFilename,
+                    questions: extractedData,
+                    all_questions_meta: availableQuestions
+                };
+
+                if (currentPaperUUID) {
+                    payload.paper_uuid = currentPaperUUID;
+                }
+
                 let res = await fetch('/confirm_save', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        source_filename: currentFilename,
-                        questions: extractedData,
-                        all_questions_meta: availableQuestions
-                    })
+                    body: JSON.stringify(payload)
                 });
+
                 let data = await res.json();
-                alert(`成功入库 ${data.saved_count} 题!\n(新增: ${data.new_count}, 重复/强化: ${data.repeat_count})\n统计数据已更新。`);
+
+                if (currentPaperUUID) {
+                    // Review Feedback
+                    alert(`复习录入成功!\n- 错题 (选中): +1 \n- 做对 (未选): -1\n(已掌握题目将自动从题库移除)`);
+                } else {
+                    alert(`成功入库 ${data.saved_count} 题!\n(新增: ${data.new_count}, 重复/强化: ${data.repeat_count})\n统计数据已更新。`);
+                }
+
                 location.reload();
             } catch (err) {
                 alert("保存失败");

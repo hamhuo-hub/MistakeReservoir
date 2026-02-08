@@ -1,7 +1,7 @@
 import os
 import re
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
+from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from bs4 import BeautifulSoup
 
@@ -9,24 +9,35 @@ class PaperBuilder:
     def __init__(self, media_dir: str):
         self.media_dir = media_dir
         
-    def create_paper(self, questions: list, output_path: str, paper_uuid: str = None):
-        doc = Document()
+    def create_paper(self, questions: list, output_path_base: str, paper_uuid: str = None):
+        """
+        Generates two files:
+        1. Question Paper
+        2. Answer Key
+        Returns list of generated file paths.
+        """
+        doc_q = Document()
+        doc_a = Document()
         
-        # --- Styles ---
-        style = doc.styles['Normal']
-        style.font.name = 'Microsoft YaHei'
-        style.font.size = Pt(10.5) # 5号
-        style.paragraph_format.space_after = Pt(0)
-        style.paragraph_format.line_spacing = 1.0
+        # --- Styles Setup for Both ---
+        for doc in [doc_q, doc_a]:
+            style = doc.styles['Normal']
+            style.font.name = 'Microsoft YaHei'
+            style.font.size = Pt(10.5) # 5号
+            style.paragraph_format.space_after = Pt(0)
+            style.paragraph_format.line_spacing = 1.0
+        
+
         
         # --- Paper ID Header (Visible for Review) ---
         if paper_uuid:
-            p = doc.add_paragraph()
+            # Only needed on Question Paper for scanning/review
+            p = doc_q.add_paragraph()
             p.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
             run = p.add_run(f"Paper ID: {paper_uuid}")
             run.font.size = Pt(8)
             run.font.color.rgb = RGBColor(150, 150, 150) # Grey
-            doc.add_paragraph() # Spacing
+            doc_q.add_paragraph() # Spacing
         
         # --- Logic ---
         # Sort Order
@@ -69,62 +80,136 @@ class PaperBuilder:
                 
             header_title = section_map.get(clean_type, f"部分 {clean_type}")
             
-            # 1. Section Header
+            # 1. Section Header (Questions Doc)
             if header_title not in added_encounters:
-                if added_encounters: doc.add_paragraph() # Spacing
-                h = doc.add_heading(header_title, level=1)
+                if added_encounters: doc_q.add_paragraph() # Spacing
+                h = doc_q.add_heading(header_title, level=1)
                 h.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
                 added_encounters.add(header_title)
                 current_type = clean_type # Logical group
                 last_material_id = None
             
-            # 2. Material
+            # 2. Material (Questions Doc)
             mid = q.get('material_id')
             if mid and mid != last_material_id:
                 mat_content = q.get('material_content')
                 if mat_content:
-                    p = doc.add_paragraph()
+                    p = doc_q.add_paragraph()
                     r = p.add_run("根据以下材料，回答下列问题：")
                     r.bold = True
-                    self._add_html_content(doc, mat_content)
-                    doc.add_paragraph() # Spacing after material
+                    self._add_html_content(doc_q, mat_content)
+                    doc_q.add_paragraph() # Spacing after material
                 last_material_id = mid
             elif not mid:
                 last_material_id = None
 
-            # 3. Question Logic
+            # 3. Question Logic (Questions Doc)
             # Stem
-            p = doc.add_paragraph()
+            p = doc_q.add_paragraph()
             p.add_run(f"{global_idx}. ").bold = True
-            self._add_html_content_inline(p, q.get('content_html'), doc)
+            # Bold the stem text as requested
+            self._add_html_content_inline(p, q.get('content_html'), doc_q, bold=True, q_type=q.get('type'))
             
             # Options
             if q.get('options_html'):
-                 self._add_options(doc, q.get('options_html'))
+                 self._add_options(doc_q, q.get('options_html'))
             
             global_idx += 1
-            doc.add_paragraph() # Spacing between questions
+            doc_q.add_paragraph() # Spacing between questions
 
-        # --- Answer Key ---
-        doc.add_page_break()
-        h = doc.add_heading('参考答案与解析', level=1)
+        # --- Answer Key Doc ---
+        # 1. Header
+        h = doc_a.add_heading('参考答案与解析', level=1)
         h.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
         
+        # 2. Quick Answer Table
+        self._create_answer_table(doc_a, questions)
+        doc_a.add_paragraph() # Spacing
+
+        # 3. Detailed Answers
         for i, q in enumerate(questions):
-            p = doc.add_paragraph()
+            p = doc_a.add_paragraph()
             p.add_run(f"{i+1}. ").bold = True
+            
+            # Answer + Analysis
+            # Retrieve answer string (assuming it might be HTML or distinct field?)
+            # Usually 'answer_html' contains the analysis/explanation too or just the letter?
+            # Based on user data, answer_html often includes "【答案】B 【解析】..."
             
             ans = q.get('answer_html')
             if ans:
-                self._add_html_content_inline(p, ans, doc)
+                self._add_html_content_inline(p, ans, doc_a)
             else:
                 p.add_run("（暂无解析）")
-                
-        if questions:
-            self._unify_styles(doc)
+            doc_a.add_paragraph() # Spacing
 
-        doc.save(output_path)
-        return output_path
+        # Finalize
+        if questions:
+            self._unify_styles(doc_q)
+            self._unify_styles(doc_a)
+
+        # Save Both
+        path_q = output_path_base.replace(".docx", "_题目.docx")
+        path_a = output_path_base.replace(".docx", "_答案.docx")
+        
+        doc_q.save(path_q)
+        doc_a.save(path_a)
+        
+        return [path_q, path_a]
+
+    def _create_answer_table(self, doc, questions):
+        """Creates a grid of answers at the top of the answer document."""
+        import re
+        
+        # Extract simple answers (A, B, C, D) from answer_html if possible
+        # Or hopefully there is a cleaner field. If not, use regex on html.
+        # Common format: <p>【答案】 A</p> or just "A"
+        
+        extracted = {}
+        for i, q in enumerate(questions):
+            txt = q.get('answer_html', '')
+            # Simple regex to find the letter after 答案
+            # Matches: 【答案】A or 答案：A or just A (risky)
+            # Let's try matching standard patterns first
+            match = re.search(r'(?:答案|Answer)[^\w]*([A-H])', txt, re.IGNORECASE)
+            if match:
+                extracted[i+1] = match.group(1).upper()
+            else:
+                # Fallback: maybe the text IS just the answer if short?
+                clean = re.sub(r'<[^>]+>', '', txt).strip()
+                if clean in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']:
+                     extracted[i+1] = clean
+                else:
+                     extracted[i+1] = " "
+        
+        if not extracted: return
+
+        # Create Table
+        chunk_size = 5
+        total = len(questions)
+        # rows = ceil(total/5) * 2
+        
+        table = doc.add_table(rows=0, cols=chunk_size)
+        table.style = 'Table Grid'
+        table.autofit = False 
+        
+        # Set column widths? (Optional, docx automatic is usually ok for 5 cols)
+        
+        sorted_nums = sorted(extracted.keys())
+        for i in range(0, len(sorted_nums), chunk_size):
+            chunk = sorted_nums[i : i + chunk_size]
+            
+            row_q = table.add_row().cells
+            row_a = table.add_row().cells
+            
+            for j, q_num in enumerate(chunk):
+                row_q[j].text = str(q_num)
+                row_a[j].text = extracted[q_num]
+                
+                # Center align
+                for cell in [row_q[j], row_a[j]]:
+                    for p in cell.paragraphs:
+                        p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
 
     def _unify_styles(self, doc):
         """
@@ -197,7 +282,7 @@ class PaperBuilder:
                 # Simplified table
                 pass
 
-    def _add_html_content_inline(self, paragraph, html_str, doc):
+    def _add_html_content_inline(self, paragraph, html_str, doc, bold=False, q_type=None):
         """Adds text to existing paragraph, inserting images inline or as blocks based on size"""
         if not html_str: return
         soup = BeautifulSoup(html_str, 'html.parser')
@@ -208,6 +293,7 @@ class PaperBuilder:
         
         # Determine the run to append to
         run = paragraph.add_run()
+        if bold: run.bold = True
         
         # We process 'descendants' carefully or just iterate contents?
         # contents is strictly direct children. text might be split.
@@ -220,10 +306,17 @@ class PaperBuilder:
         for output in self._flatten_nodes(soup):
             type_, content = output
             if type_ == 'text':
-                if content: run.add_text(content)
+                if content: 
+                     run.add_text(content)
             elif type_ == 'img':
                 # Try to insert
-                self._insert_image_hybrid(doc, run, content)
+                self._insert_image_hybrid(doc, run, content, q_type=q_type)
+                # If we broke the run for a block image, we need a NEW run for subsequent text?
+                # _insert_image_hybrid might handle breaks. 
+                # If it adds a break, the 'run' object is still technically valid for adding text, 
+                # but might be visually weird if we don't handle it.
+                # However, for simplicity, we keep appending.
+                pass
                 
     def _flatten_nodes(self, element):
         """Yields ('text', str) or ('img', src)"""
@@ -264,11 +357,13 @@ class PaperBuilder:
             p = doc.add_paragraph()
             self._add_html_content_inline(p, html_str, doc)
 
-    def _insert_image_hybrid(self, doc, run, src):
+    def _insert_image_hybrid(self, doc, run, src, q_type=None):
         """
         Inserts image. 
-        - If small/icon-like: Insert into 'run' with height=Pt(11) (Inline).
-        - If large: Insert as new Paragraph (Block).
+        - If 'q_type' contains '图形', FORCE height=4cm.
+        - Otherwise:
+            - If small/icon-like: Insert into 'run' with height=Pt(11) (Inline).
+            - If large: Insert as new Paragraph (Block).
         """
         try:
             from PIL import Image
@@ -288,7 +383,13 @@ class PaperBuilder:
         width_arg = None
         height_arg = None
         
-        if Image:
+        # Check Special Type first
+        if q_type and '图形' in str(q_type):
+            # Force 4cm
+            # Treat as inline-ish but with specific height
+            is_inline = True
+            height_arg = Cm(4)
+        elif Image:
             try:
                 with Image.open(fpath) as img:
                     w, h = img.size
