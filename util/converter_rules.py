@@ -9,6 +9,12 @@ START_KEYWORD_REGEX = re.compile(
     r'(【\s*答案\s*】|正确\s*答案|参考\s*答案|答案\s*[:：])'
 )
 
+# 1.1 提取答案值 Pattern (Capture Group 1 is the letter)
+ANSWER_VAL_PATTERN = re.compile(
+    r'(?:【\s*答案\s*】|正确\s*答案|参考\s*答案|答案\s*[:：])\s*([A-Da-d])', 
+    re.IGNORECASE
+)
+
 # 2. 自定义【结束删除】关键字 (Regex List)
 # 遇到这些行（通常是新的一题或大标题），停止删除
 END_KEYWORD_PATTERNS = [

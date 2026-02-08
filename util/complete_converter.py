@@ -12,7 +12,8 @@ try:
         START_KEYWORD_REGEX,
         END_KEYWORD_PATTERNS,
         STRONG_DELETE_CONTAIN,
-        FORCE_DELETE_PREFIXES
+        FORCE_DELETE_PREFIXES,
+        ANSWER_VAL_PATTERN
     )
 except ImportError:
     import sys
@@ -21,7 +22,8 @@ except ImportError:
         START_KEYWORD_REGEX,
         END_KEYWORD_PATTERNS,
         STRONG_DELETE_CONTAIN,
-        FORCE_DELETE_PREFIXES
+        FORCE_DELETE_PREFIXES,
+        ANSWER_VAL_PATTERN
     )
 
 DEBUG_MODE = False
@@ -114,6 +116,7 @@ def clean_docx_block(input_path, output_path):
     # State Machine
     is_deleting = False
     last_q_num = 0
+    extracted_answers = {}  # {q_num: answer_letter}
     
     blocks = list(iter_block_items(doc))
     
@@ -130,6 +133,13 @@ def clean_docx_block(input_path, output_path):
         for p in paragraphs:
             text = p.text.strip()
             
+            # --- EXTRACT ANSWER ---
+            # Check for answer pattern even if deleting, because sometimes it's IN the deleted block
+            ans_match = ANSWER_VAL_PATTERN.search(text)
+            if ans_match and last_q_num > 0:
+                # Only store if we haven't found an answer for this Q (or overwrite? usually first match is good)
+                extracted_answers[last_q_num] = ans_match.group(1).upper()
+
             # === STATE: DELETE ===
             if is_deleting:
                 # 1. Check STOP Triggers
@@ -196,6 +206,8 @@ def clean_docx_block(input_path, output_path):
                 is_force = False
                 for kw in STRONG_DELETE_CONTAIN:
                     if kw in text:
+                        # Also check if this line contains the answer before deleting!
+                        # (Already done at top of loop)
                         is_force = True
                         break
                 if not is_force:
@@ -221,7 +233,7 @@ def clean_docx_block(input_path, output_path):
                     except ValueError:
                         pass
 
-    # Post Processing
+    # Post Processing - Delete Empty Paragraphs
     count_deleted = 0
     to_delete = []
     for p in doc.paragraphs:
@@ -242,8 +254,57 @@ def clean_docx_block(input_path, output_path):
             p_element.getparent().remove(p_element)
             count_deleted += 1
 
+    # --- APPEND EXTRACTED ANSWERS ---
+    if extracted_answers:
+        doc.add_page_break()
+        try:
+            doc.add_heading("参考答案", level=1)
+        except Exception:
+            # Fallback if "Heading 1" style doesn't exist
+            p = doc.add_paragraph()
+            run = p.add_run("参考答案")
+            run.bold = True
+            try:
+                run.font.size = 20 * 12700 
+            except:
+                pass
+        
+        # Sort answers by question number
+        sorted_q_nums = sorted(extracted_answers.keys())
+        
+        # New Layout: Horizontal Table
+        # Chunks of 5 seems standard and readable.
+        chunk_size = 5
+        
+        # We need a table with 'chunk_size' columns.
+        table = doc.add_table(rows=0, cols=chunk_size)
+        try:
+            table.style = 'Table Grid'
+        except Exception:
+            pass
+            
+        for i in range(0, len(sorted_q_nums), chunk_size):
+            chunk = sorted_q_nums[i : i + chunk_size]
+            
+            # Add Question Row (Top)
+            row_q = table.add_row().cells
+            # Add Answer Row (Bottom)
+            row_a = table.add_row().cells
+            
+            for j, q_num in enumerate(chunk):
+                # Question Number
+                row_q[j].text = str(q_num)
+                # Answer
+                row_a[j].text = extracted_answers[q_num]
+                
+                # Optional: Center Alignment (if we imported WD_ALIGN_PARAGRAPH)
+                # For now just default top-left is safer without new imports.
+                
+            # If chunk is smaller than chunk_size (last row), fill remaining with empty?
+            # docx handles it fine, cells are already created blank.
+
     doc.save(output_path)
-    print(f"  -> Done. Deleted empty paragraphs: {count_deleted}")
+    print(f"  -> Done. Deleted empty paragraphs: {count_deleted}. Extracted {len(extracted_answers)} answers.")
 
 if __name__ == "__main__":
     folder = "."

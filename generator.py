@@ -9,7 +9,7 @@ class PaperBuilder:
     def __init__(self, media_dir: str):
         self.media_dir = media_dir
         
-    def create_paper(self, questions: list, output_path: str):
+    def create_paper(self, questions: list, output_path: str, paper_uuid: str = None):
         doc = Document()
         
         # --- Styles ---
@@ -18,6 +18,15 @@ class PaperBuilder:
         style.font.size = Pt(10.5) # 5号
         style.paragraph_format.space_after = Pt(0)
         style.paragraph_format.line_spacing = 1.0
+        
+        # --- Paper ID Header (Visible for Review) ---
+        if paper_uuid:
+            p = doc.add_paragraph()
+            p.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+            run = p.add_run(f"Paper ID: {paper_uuid}")
+            run.font.size = Pt(8)
+            run.font.color.rgb = RGBColor(150, 150, 150) # Grey
+            doc.add_paragraph() # Spacing
         
         # --- Logic ---
         # Sort Order

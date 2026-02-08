@@ -60,11 +60,20 @@ class DatabaseManager:
                 question_id INTEGER PRIMARY KEY,
                 status TEXT DEFAULT 'pool', -- pool, archived
                 mistake_count INTEGER DEFAULT 1,
+                right_streak INTEGER DEFAULT 0, -- Consecutive correct answers
                 last_wrong_date TEXT,
                 last_right_date TEXT,
                 FOREIGN KEY(question_id) REFERENCES questions(id)
             )
         ''')
+        
+        # Check if right_streak exists (Migration for existing DB)
+        try:
+            cursor.execute("SELECT right_streak FROM review_stats LIMIT 1")
+        except:
+             try:
+                 cursor.execute("ALTER TABLE review_stats ADD COLUMN right_streak INTEGER DEFAULT 0")
+             except: pass
 
         # Exam Records (Auto-Calculated from Uploads)
         cursor.execute('''
@@ -75,6 +84,15 @@ class DatabaseManager:
                 total_score REAL,
                 total_accuracy REAL,
                 module_stats TEXT -- JSON breakdown
+            )
+        ''')
+        
+        # Generated Papers (For Review Mode)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS generated_papers (
+                uuid TEXT PRIMARY KEY,
+                created_at TEXT,
+                question_ids TEXT -- JSON List of Int
             )
         ''')
         
@@ -116,7 +134,7 @@ class DatabaseManager:
         return mid
 
     def add_question(self, source_id: int, original_num: int, content: str, options: str,
-                     answer: str, images: List[str], type: str, material_id: Optional[int] = None) -> int:
+                     answer: str, images: List[str], type: str, material_id: Optional[int] = None) -> (int, bool):
         conn = self.get_connection()
         c = conn.cursor()
         
@@ -131,9 +149,17 @@ class DatabaseManager:
                 SET content_html=?, options_html=?, answer_html=?, images=?, type=?, material_id=?
                 WHERE id=?
             ''', (content, options, answer, json.dumps(images), type, material_id, qid))
+            
+            # Increment Mistake Count (Repetition)
+            c.execute('''
+                UPDATE review_stats 
+                SET mistake_count = mistake_count + 1, last_wrong_date = ?
+                WHERE question_id = ?
+            ''', (datetime.now().isoformat(), qid))
+            
             conn.commit()
             conn.close()
-            return qid
+            return qid, False # Not new
             
         c.execute('''
             INSERT INTO questions (source_id, material_id, original_num, type, content_html, options_html, answer_html, images)
@@ -144,13 +170,13 @@ class DatabaseManager:
         
         # Init Stats
         c.execute('''
-            INSERT INTO review_stats (question_id, status, last_wrong_date)
-            VALUES (?, 'pool', ?)
+            INSERT INTO review_stats (question_id, status, last_wrong_date, mistake_count)
+            VALUES (?, 'pool', ?, 1)
         ''', (qid, datetime.now().isoformat()))
         
         conn.commit()
         conn.close()
-        return qid
+        return qid, True # New
 
     def update_question_text(self, qid: int, content: str, options: str, answer: str):
         conn = self.get_connection()
@@ -400,6 +426,75 @@ class DatabaseManager:
             
         conn.close()
         return results
+
+    # --- Review Mode Methods ---
+
+    def record_generated_paper(self, uuid: str, question_ids: List[int]):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("INSERT INTO generated_papers (uuid, created_at, question_ids) VALUES (?, ?, ?)",
+                  (uuid, datetime.now().isoformat(), json.dumps(question_ids)))
+        conn.commit()
+        conn.close()
+
+    def get_generated_paper_qids(self, uuid: str) -> List[int]:
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT question_ids FROM generated_papers WHERE uuid=?", (uuid,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return json.loads(row['question_ids'])
+        return []
+
+    def process_review_results(self, wrong_qids: List[int], all_paper_qids: List[int]) -> Dict:
+        """
+        Updates stats.
+        wrong_qids: Mistake count++, Streak=0
+        others (in all_paper_qids): Streak++, Check for Archive
+        """
+        conn = self.get_connection()
+        c = conn.cursor()
+        
+        wrong_set = set(wrong_qids)
+        stats = {"archived": 0, "mistakes": 0, "improved": 0}
+        
+        idx_map = {qid: i for i, qid in enumerate(all_paper_qids)} 
+        # Using index map if we wanted to check sequences, but streak is persistent per question.
+        
+        for qid in all_paper_qids:
+            if qid in wrong_set:
+                # Wrong
+                c.execute('''
+                    UPDATE review_stats 
+                    SET mistake_count = mistake_count + 1, right_streak = 0, last_wrong_date = ?
+                    WHERE question_id = ?
+                ''', (datetime.now().isoformat(), qid))
+                stats['mistakes'] += 1
+            else:
+                # Right
+                # Check current streak first
+                c.execute("SELECT right_streak FROM review_stats WHERE question_id=?", (qid,))
+                row = c.fetchone()
+                current_streak = row['right_streak'] if row else 0
+                new_streak = current_streak + 1
+                
+                status_update = ""
+                if new_streak >= 2:
+                    status_update = ", status = 'archived'"
+                    stats['archived'] += 1
+                else:
+                    stats['improved'] += 1
+                    
+                c.execute(f'''
+                    UPDATE review_stats 
+                    SET right_streak = ?, last_right_date = ? {status_update}
+                    WHERE question_id = ?
+                ''', (new_streak, datetime.now().isoformat(), qid))
+        
+        conn.commit()
+        conn.close()
+        return stats
 
 if __name__ == "__main__":
     import argparse
