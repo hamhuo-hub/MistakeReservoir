@@ -432,103 +432,91 @@ def extract_preview(req: ExtractRequest):
 
 @app.post("/confirm_save")
 def confirm_save(req: SaveRequest):
-    # 0. Check for Review Mode
-    if req.paper_uuid:
-        # Review Mode Logic
-        # req.questions contains the SELECTED (Wrong) questions.
-        # We need to fetch ALL questions from this paper to find the RIGHT ones.
-        all_paper_qids = db.get_generated_paper_qids(req.paper_uuid)
-        if not all_paper_qids:
-             # Should not happen unless DB wiped
-             return {"status": "error", "message": "Paper not found"}
-        
-        wrong_qids = [q['id'] for q in req.questions if q.get('id')]
-        
-        stats = db.process_review_results(wrong_qids, all_paper_qids)
-        
-        return {"status": "success", "review_stats": stats, "saved_count": len(wrong_qids)}
-
-    # 1. Add Source (Normal Import)
-    sid = db.add_source(req.source_filename)
-    
-    # 2. Add Questions & Materials
-    material_map = {} # content_hash -> mid
-    
-    # Helper to move file if exists
-    def move_from_temp(filename):
-        src = os.path.join(MEDIA_DIR, "temp", filename)
-        dst = os.path.join(MEDIA_DIR, filename)
-        if os.path.join(MEDIA_DIR, "temp") in src and os.path.exists(src): # basic safety
-            try:
-                shutil.move(src, dst)
-            except Exception as e:
-                print(f"Error moving {filename}: {e}")
-
-    # Helper to fix HTML
-    def fix_html_paths(html):
-        if not html: return html
-        return html.replace("/media/temp/", "/media/")
-
-    # Counters
     new_count = 0
     repeat_count = 0
     count = 0
-
-    for q in req.questions:
-        # 1. Move physical files based on the authoritative 'images' list
-        if q.get('images'):
-            for img in q['images']:
-                # img is just filename (uuid.png)
-                move_from_temp(img)
+    
+    # 1. Review Mode Branch
+    if req.paper_uuid:
+        all_paper_qids = db.get_generated_paper_qids(req.paper_uuid)
+        if not all_paper_qids:
+             return {"status": "error", "message": "Paper not found"}
         
-        # 2. Update HTML content strings (Simple replacement is safer/faster than regex)
-        q['content_html'] = fix_html_paths(q['content_html'])
-        q['options_html'] = fix_html_paths(q['options_html'])
-        q['answer_html'] = fix_html_paths(q['answer_html'])
+        wrong_qids = [q['id'] for q in req.questions if q.get('id')]
+        db.process_review_results(wrong_qids, all_paper_qids)
+        count = len(wrong_qids)
+        
+    # 2. Import Mode Branch
+    else:
+        # 1. Add Source (Normal Import)
+        sid = db.add_source(req.source_filename)
+        
+        # 2. Add Questions & Materials
+        material_map = {} # content_hash -> mid
+        
+        # Helper to move file if exists
+        def move_from_temp(filename):
+            src = os.path.join(MEDIA_DIR, "temp", filename)
+            dst = os.path.join(MEDIA_DIR, filename)
+            if os.path.join(MEDIA_DIR, "temp") in src and os.path.exists(src):
+                try:
+                    shutil.move(src, dst)
+                except Exception as e:
+                    print(f"Error moving {filename}: {e}")
 
-        # Material handling
-        mid = None
-        mat_content = q.get('material_content')
-        if mat_content:
-            # Mistake in original code: logic to rescue material images missing?
-            # We implemented text replacement in previous steps but maybe images are lost if only in material.
-            # For now, let's stick to existing logic plus helper usage.
+        # Helper to fix HTML
+        def fix_html_paths(html):
+            if not html: return html
+            return html.replace("/media/temp/", "/media/")
+
+        for q in req.questions:
+            # Move physical files
+            if q.get('images'):
+                for img in q['images']:
+                    move_from_temp(img)
             
-            # Fallback: Parse material HTML for /media/temp/ filenames
-            # We must import re here if not globally imported or use the one from top
-            import re
-            mat_temp_imgs = re.findall(r'/media/temp/([\w\-\.]+\.\w+)', mat_content)
-            for img in mat_temp_imgs:
-                move_from_temp(img)
+            # Update HTML
+            q['content_html'] = fix_html_paths(q['content_html'])
+            q['options_html'] = fix_html_paths(q['options_html'])
+            q['answer_html'] = fix_html_paths(q['answer_html'])
+
+            # Material handling
+            mid = None
+            mat_content = q.get('material_content')
+            if mat_content:
+                import re
+                mat_temp_imgs = re.findall(r'/media/temp/([\w\-\.]+\.\w+)', mat_content)
+                for img in mat_temp_imgs:
+                    move_from_temp(img)
+                
+                mat_content = fix_html_paths(mat_content)
+                
+                mat_hash = hash(mat_content)
+                if mat_hash in material_map:
+                    mid = material_map[mat_hash]
+                else:
+                    mid = db.add_material(sid, mat_content, type=q['type'])
+                    material_map[mat_hash] = mid
             
-            mat_content = fix_html_paths(mat_content)
+            qid, is_new = db.add_question(
+                source_id=sid,
+                original_num=q['original_num'],
+                content=q['content_html'],
+                options=q['options_html'],
+                answer=q['answer_html'], 
+                images=q['images'],
+                type=q['type'],
+                material_id=mid
+            )
             
-            mat_hash = hash(mat_content)
-            if mat_hash in material_map:
-                mid = material_map[mat_hash]
+            if is_new:
+                new_count += 1
             else:
-                mid = db.add_material(sid, mat_content, type=q['type'])
-                material_map[mat_hash] = mid
-        
-        qid, is_new = db.add_question(
-            source_id=sid,
-            original_num=q['original_num'],
-            content=q['content_html'],
-            options=q['options_html'],
-            answer=q['answer_html'], 
-            images=q['images'],
-            type=q['type'],
-            material_id=mid
-        )
-        
-        if is_new:
-            new_count += 1
-        else:
-            repeat_count += 1
+                repeat_count += 1
+                
+            count += 1
             
-        count += 1
-        
-    # --- Stats Calculation ---
+    # --- Stats Calculation (Shared) ---
     try:
         # Weights
         WEIGHTS = {
@@ -580,10 +568,19 @@ def confirm_save(req: SaveRequest):
 
         total_accuracy = (total_correct / total_questions * 100) if total_questions > 0 else 0.0
         
-        db.add_exam_record(req.source_filename, total_score, total_accuracy, module_stats)
+        # Determine filename for record
+        record_name = req.source_filename
+        if req.paper_uuid:
+             # Use a distinct name or the original filename with marker
+             # Reusing source_filename usually works if frontend sends it, 
+             # but let's make it clear it's a review.
+             record_name = f"Review_{req.paper_uuid[:8]}"
+
+        db.add_exam_record(record_name, total_score, total_accuracy, module_stats)
         
     except Exception as e:
         print(f"Stats Calculation Failed: {e}")
+
         # Non-blocking, still return success for saving
 
     return {"status": "success", "saved_count": count, "new_count": new_count, "repeat_count": repeat_count}
