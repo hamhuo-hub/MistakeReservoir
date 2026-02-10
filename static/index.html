@@ -415,7 +415,19 @@
         </div>
 
         <div class="card">
-            <h2><img id="icon_generate_header" src="" class="header-icon"> 生成错题卷</h2>
+            <h2 style="display:flex; justify-content:space-between; align-items:center;">
+                <span><img id="icon_generate_header" src="" class="header-icon"> 生成错题卷</span>
+                <button onclick="toggleHistory()"
+                    style="font-size:14px; padding:5px 10px; margin:0; background:#64748b;">
+                    📜 历史记录
+                </button>
+            </h2>
+
+            <div id="historyPanel"
+                style="display:none; margin-bottom:20px; border:1px solid #e2e8f0; padding:10px; border-radius:6px; max-height:200px; overflow-y:auto;">
+                <div style="text-align:center; color:#64748b;">加载中...</div>
+            </div>
+
             <div style="display:flex; gap:10px; align-items:center;">
                 <input type="number" id="genCount" value="130" style="width:80px; margin:0;" min="1" max="135">
                 <label>题量</label>
@@ -798,16 +810,100 @@
 
                 if (currentPaperUUID) {
                     // Review Feedback
-                    alert(`复习录入成功!\n- 错题 (选中): +1 \n- 做对 (未选): -1\n(已掌握题目将自动从题库移除)`);
+                    alert("Imported " + data.saved_count + " mistakes from review!");
+                    // Refresh?
+                    location.reload();
                 } else {
-                    alert(`成功入库 ${data.saved_count} 题!\n(新增: ${data.new_count}, 重复/强化: ${data.repeat_count})\n统计数据已更新。`);
+                    alert("成功保存 " + data.saved_count + " 道题" +
+                        (data.repeat_count ? " (含 " + data.repeat_count + " 道重复更新)" : ""));
+
+                    // Reset
+                    extractedData = [];
+                    document.getElementById('previewArea').style.display = 'none';
+                    // clear file input
+                    document.getElementById('fileInput').value = "";
+                    document.getElementById('fileName').innerText = "点击选择 DOCX 文件";
+                    document.getElementById('gridPanel').style.display = 'none';
+                    selectedIds.clear();
+
+                    // Update stats
+                    loadStats();
+                    loadExamStats();
                 }
 
-                location.reload();
             } catch (err) {
-                alert("保存失败");
+                alert("保存失败: " + err);
             }
         }
+
+        // --- History Logic ---
+
+        async function toggleHistory() {
+            let panel = document.getElementById('historyPanel');
+            if (panel.style.display === 'none') {
+                panel.style.display = 'block';
+                loadHistory();
+            } else {
+                panel.style.display = 'none';
+            }
+        }
+
+        async function loadHistory() {
+            let panel = document.getElementById('historyPanel');
+            panel.innerHTML = '<div style="text-align:center; color:#64748b;">加载中...</div>';
+
+            try {
+                let res = await fetch('/api/papers');
+                let papers = await res.json();
+
+                if (!papers || papers.length === 0) {
+                    panel.innerHTML = '<div style="text-align:center; color:#64748b;">暂无生成记录</div>';
+                    return;
+                }
+
+                let html = '<table style="width:100%; font-size:14px; border-collapse:collapse;">';
+                html += '<tr style="text-align:left; color:#64748b;"><th>时间</th><th>题量</th><th>操作</th></tr>';
+
+                papers.forEach(p => {
+                    // Format Date
+                    let dateStr = p.created_at.replace("T", " ").split(".")[0];
+                    let uuid = p.uuid;
+
+                    html += `
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:8px 0;">${dateStr}</td>
+                            <td>${p.question_count}题</td>
+                            <td>
+                                <a href="/api/paper/${uuid}/download" target="_blank" 
+                                   style="color:var(--primary); text-decoration:none; font-weight:bold;">
+                                   ⬇ 下载
+                                </a>
+                            </td>
+                        </tr>
+                    `;
+                });
+                html += '</table>';
+
+                panel.innerHTML = html;
+
+            } catch (err) {
+                panel.innerHTML = '<div style="text-align:center; color:red;">加载失败: ' + err.message + '</div>';
+            }
+        }
+
+        // --- Init Stats ---
+
+
+
+
+
+
+        // --- Chart & Heatmap & Exam Stats ---
+
+        // Helper: Get recent 12 months for heatmap
+
+
+
 
         async function generatePaper() {
             let count = document.getElementById('genCount').value;
@@ -1142,12 +1238,7 @@
         loadStats();
         loadExamStats();
     </script>
-    <script>
-        // Heartbeat to keep server alive
-        setInterval(() => {
-            fetch('/api/heartbeat', { method: 'POST' }).catch(() => { });
-        }, 1000);
-    </script>
+    <!-- Heartbeat removed -->
     <script>
         async function uploadReview() {
             const fileInput = document.getElementById('review-upload-input');

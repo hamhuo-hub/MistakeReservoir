@@ -97,7 +97,13 @@ class PaperBuilder:
                     p = doc_q.add_paragraph()
                     r = p.add_run("根据以下材料，回答下列问题：")
                     r.bold = True
-                    self._add_html_content(doc_q, mat_content)
+                    
+                    # Clean unwanted instruction text from material
+                    clean_mat_content = re.sub(r'根据以下材料[，,]*回答下列问题[：:]*(?:\s*\(共\d+题[，,]*限时\d+分钟\))?', '', mat_content).strip()
+                    # Also generic unwanted numeric info header
+                    clean_mat_content = re.sub(r'^\s*\(共\d+题[，,]*限时\d+分钟\)', '', clean_mat_content).strip()
+                    
+                    self._add_html_content(doc_q, clean_mat_content)
                     doc_q.add_paragraph() # Spacing after material
                 last_material_id = mid
             elif not mid:

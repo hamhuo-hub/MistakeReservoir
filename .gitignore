@@ -16,3 +16,5 @@ reservoir.db
 
 # Other
 *.toc
+/_internal
+/temp

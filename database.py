@@ -61,7 +61,6 @@ class DatabaseManager:
                 status TEXT DEFAULT 'pool',
                 mistake_count INTEGER DEFAULT 2,
                 last_wrong_date TEXT,
-                last_right_date TEXT,
                 FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
             )
         ''')
@@ -79,14 +78,6 @@ class DatabaseManager:
             END;
         ''')
         
-        # Check if right_streak exists (Migration for existing DB)
-        try:
-            cursor.execute("SELECT right_streak FROM review_stats LIMIT 1")
-        except:
-             try:
-                 cursor.execute("ALTER TABLE review_stats ADD COLUMN right_streak INTEGER DEFAULT 0")
-             except: pass
-
         # Exam Records (Auto-Calculated from Uploads)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS exam_records (
@@ -163,9 +154,10 @@ class DatabaseManager:
             ''', (content, options, answer, json.dumps(images), type, material_id, qid))
             
             # Increment Mistake Count (Repetition)
+            # Ensure it bumps back to at least 2 (New) even if it was at 1.
             c.execute('''
                 UPDATE review_stats 
-                SET mistake_count = mistake_count + 1, last_wrong_date = ?
+                SET mistake_count = MAX(mistake_count + 1, 2), last_wrong_date = ?
                 WHERE question_id = ?
             ''', (datetime.now().isoformat(), qid))
             
@@ -180,10 +172,9 @@ class DatabaseManager:
         
         qid = c.lastrowid
         
-        # Init Stats
         c.execute('''
             INSERT INTO review_stats (question_id, status, last_wrong_date, mistake_count)
-            VALUES (?, 'pool', ?, 1)
+            VALUES (?, 'pool', ?, 2)
         ''', (qid, datetime.now().isoformat()))
         
         conn.commit()
@@ -276,7 +267,7 @@ class DatabaseManager:
             query += f" AND q.type IN ({placeholders})"
             params.extend(type_filter)
             
-        query += " ORDER BY RANDOM() LIMIT ?"
+        query += " ORDER BY r.mistake_count DESC, RANDOM() LIMIT ?"
         params.append(count)
         
         c.execute(query, params)
@@ -349,7 +340,7 @@ class DatabaseManager:
                 JOIN questions q ON r.question_id = q.id
                 LEFT JOIN materials m ON q.material_id = m.id
                 WHERE r.status = 'pool' AND q.type LIKE ?
-                ORDER BY RANDOM() LIMIT ?
+                ORDER BY r.mistake_count DESC, RANDOM() LIMIT ?
             '''
             c.execute(query, (f"%{type_key}%", needed))
             rows = c.fetchall()
@@ -385,6 +376,97 @@ class DatabaseManager:
             print("Database Wiped Clean.")
         except Exception as e:
             print(f"Error wiping database: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def migrate_cleanup_stats(self):
+        """
+        Migration:
+        1. Calculate mistake_count = mistake_count - right_streak (where right_streak exists)
+        2. Remove right_streak and last_right_date columns by recreating table
+        """
+        conn = self.get_connection()
+        c = conn.cursor()
+        print("Starting migration: Clean up review stats...")
+        
+        try:
+            # 1. Update data in place first (if column exists)
+            try:
+                # Check if right_streak exists
+                c.execute("SELECT right_streak FROM review_stats LIMIT 1")
+                # Update logic: mistake_count = MAX(mistake_count - right_streak, ?) 
+                # Actually user just said subtract. If it goes below 0 trigger handles it?
+                # Trigger fires on UPDATE. 
+                # But we probably want to apply this calculation BEFORE recreating table.
+                
+                print("Applying formula: mistake_count = mistake_count - right_streak")
+                c.execute("UPDATE review_stats SET mistake_count = mistake_count - right_streak")
+                
+                # Check for deletions handled by trigger? 
+                # The trigger `auto_delete_mastered` fires AFTER UPDATE.
+                # So if mistake_count becomes <= 0, the question is deleted.
+                # This is correct per user intent (mastered items gone).
+                
+            except sqlite3.OperationalError:
+                print("Column 'right_streak' not found, skipping data update.")
+
+            # 2. Recreate Table to drop columns
+            print("Recreating review_stats table...")
+            
+            # Rename old
+            c.execute("ALTER TABLE review_stats RENAME TO review_stats_old")
+            
+            # Create new
+            c.execute('''
+                CREATE TABLE review_stats (
+                    question_id INTEGER PRIMARY KEY,
+                    status TEXT DEFAULT 'pool',
+                    mistake_count INTEGER DEFAULT 2,
+                    last_wrong_date TEXT,
+                    FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Check if last_wrong_date exists in old table
+            c.execute("PRAGMA table_info(review_stats_old)")
+            old_columns = [col[1] for col in c.fetchall()]
+            has_last_wrong = 'last_wrong_date' in old_columns
+            
+            # Copy Data
+            if has_last_wrong:
+                c.execute('''
+                    INSERT INTO review_stats (question_id, status, mistake_count, last_wrong_date)
+                    SELECT question_id, status, mistake_count, last_wrong_date
+                    FROM review_stats_old
+                ''')
+            else:
+                # If old table lacks last_wrong_date, just copy others
+                c.execute('''
+                    INSERT INTO review_stats (question_id, status, mistake_count)
+                    SELECT question_id, status, mistake_count
+                    FROM review_stats_old
+                ''')
+            
+            # Drop old
+            c.execute("DROP TABLE review_stats_old")
+            
+            # Recreate Trigger
+            c.execute("DROP TRIGGER IF EXISTS auto_delete_mastered")
+            c.execute('''
+                CREATE TRIGGER auto_delete_mastered
+                AFTER UPDATE OF mistake_count ON review_stats
+                WHEN NEW.mistake_count <= 0
+                BEGIN
+                    DELETE FROM questions WHERE id = NEW.question_id;
+                END;
+            ''')
+            
+            conn.commit()
+            print("Migration completed info.")
+            
+        except Exception as e:
+            print(f"Migration failed: {e}")
             conn.rollback()
         finally:
             conn.close()
@@ -459,50 +541,60 @@ class DatabaseManager:
             return json.loads(row['question_ids'])
         return []
 
+    def get_all_generated_papers(self):
+        """
+        Fetch all generated papers for history view.
+        """
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM generated_papers ORDER BY created_at DESC")
+        rows = c.fetchall()
+        
+        papers = []
+        for row in rows:
+            p = dict(row)
+            if p.get('question_ids'):
+                try:
+                    qids = json.loads(p['question_ids'])
+                    p['question_count'] = len(qids)
+                except:
+                    p['question_count'] = 0
+            papers.append(p)
+            
+        conn.close()
+        return papers
+
     def process_review_results(self, wrong_qids: List[int], all_paper_qids: List[int]) -> Dict:
         """
         Updates stats.
-        wrong_qids: Mistake count++, Streak=0
-        others (in all_paper_qids): Streak++, Check for Archive
+        Simplified Logic:
+        - Wrong: mistake_count + 1
+        - Right: mistake_count - 1
+        - Deletion: Handled by DB Trigger (mistake_count <= 0)
         """
         conn = self.get_connection()
         c = conn.cursor()
         
         wrong_set = set(wrong_qids)
-        stats = {"archived": 0, "mistakes": 0, "improved": 0}
-        
-        idx_map = {qid: i for i, qid in enumerate(all_paper_qids)} 
-        # Using index map if we wanted to check sequences, but streak is persistent per question.
+        stats = {"mistakes": 0, "improved": 0}
         
         for qid in all_paper_qids:
             if qid in wrong_set:
-                # Wrong
+                # Wrong: +1
                 c.execute('''
                     UPDATE review_stats 
-                    SET mistake_count = mistake_count + 1, right_streak = 0, last_wrong_date = ?
+                    SET mistake_count = mistake_count + 1
                     WHERE question_id = ?
-                ''', (datetime.now().isoformat(), qid))
+                ''', (qid,))
                 stats['mistakes'] += 1
             else:
-                # Right
-                # Check current streak first
-                c.execute("SELECT right_streak FROM review_stats WHERE question_id=?", (qid,))
-                row = c.fetchone()
-                current_streak = row['right_streak'] if row else 0
-                new_streak = current_streak + 1
-                
-                status_update = ""
-                if new_streak >= 2:
-                    status_update = ", status = 'archived'"
-                    stats['archived'] += 1
-                else:
-                    stats['improved'] += 1
-                    
-                c.execute(f'''
+                # Right: -1
+                c.execute('''
                     UPDATE review_stats 
-                    SET right_streak = ?, last_right_date = ? {status_update}
+                    SET mistake_count = mistake_count - 1
                     WHERE question_id = ?
-                ''', (new_streak, datetime.now().isoformat(), qid))
+                ''', (qid,))
+                stats['improved'] += 1
         
         conn.commit()
         conn.close()
@@ -514,6 +606,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Database Manager CLI")
     parser.add_argument("--wipe", action="store_true", help="Wipe all data from database")
     parser.add_argument("--migrate", action="store_true", help="Run schema migrations")
+    parser.add_argument("--migrate-stats", action="store_true", help="Clean up stats table (Remove right_streak)")
     
     args = parser.parse_args()
     
@@ -528,5 +621,9 @@ if __name__ == "__main__":
             
     if args.migrate:
         db.migrate_database()
+
+    if args.migrate_stats:
+        db.migrate_cleanup_stats()
         
     print(f"Database Manager initialized at {db.db_path}")
+

@@ -42,25 +42,7 @@ import webbrowser
 # Config
 import sys
 
-# Heartbeat Monitor
-# Last heartbeat time
-last_heartbeat = time.time()
 
-@app.post("/api/heartbeat")
-def heartbeat():
-    global last_heartbeat
-    last_heartbeat = time.time()
-    return {"status": "ok"}
-
-def monitor_heartbeat():
-    global last_heartbeat
-    print("Heartbeat monitor started...")
-    while True:
-        time.sleep(1)
-        # If no heartbeat for > 3 seconds, exit
-        if time.time() - last_heartbeat > 15:
-            print("No heartbeat detected. Shutting down...")
-            os._exit(0)
 
 if getattr(sys, 'frozen', False):
     # Running as compiled exe
@@ -109,35 +91,101 @@ async def generate_paper(req: GenerateRequest):
     db.record_generated_paper(paper_uuid, qids)
 
     # 3. Generate Doc
+    generated_files = create_paper_files(questions, paper_uuid)
+    
+    # Zip them
+    import zipfile
+    zip_filename = f"Paper_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
+    zip_path = os.path.join("media/temp", zip_filename)
+    
+    with zipfile.ZipFile(zip_path, 'w') as zf:
+        for fpath in generated_files:
+            if os.path.exists(fpath):
+                zf.write(fpath, os.path.basename(fpath))
+                
+    return FileResponse(zip_path, filename=zip_filename)
+
+def create_paper_files(questions, paper_uuid):
     from generator import PaperBuilder
-    generator = PaperBuilder(MEDIA_DIR) # Assuming generator is an instance of PaperBuilder
-    filename_base = f"Paper_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
-    output_path_base = os.path.join("temp", filename_base)
-    os.makedirs("temp", exist_ok=True)
+    generator = PaperBuilder(MEDIA_DIR)
+    filename_base = f"Paper_{paper_uuid}.docx"
+    output_path_base = os.path.join(MEDIA_DIR, "temp", filename_base)
+    os.makedirs(os.path.join(MEDIA_DIR, "temp"), exist_ok=True)
     
     # Process images for docx
-    # (Existing logic to make absolute paths)
     for q in questions:
         # Material Images
         if q.get('material_images'):
             try:
-                m_imgs = json.loads(q['material_images'])
+                m_imgs = json.loads(q['material_images']) if isinstance(q['material_images'], str) else q['material_images']
                 # Prepend media_dir
                 q['material_images_abs'] = [os.path.join(MEDIA_DIR, img) for img in m_imgs]
             except: pass
             
         if q.get('images'):
             try:
-                imgs = json.loads(q['images'])
+                imgs = json.loads(q['images']) if isinstance(q['images'], str) else q['images']
                 q['images_abs'] = [os.path.join(MEDIA_DIR, img) for img in imgs]
             except: pass
 
-    generated_files = generator.create_paper(questions, output_path_base, paper_uuid=paper_uuid)
+    return generator.create_paper(questions, output_path_base, paper_uuid=paper_uuid)
+
+@app.get("/api/papers")
+def get_paper_history():
+    return db.get_all_generated_papers()
+
+@app.get("/api/paper/{uuid}/download")
+def download_paper(uuid: str):
+    # 1. Get QIDs
+    qids = db.get_generated_paper_qids(uuid)
+    if not qids:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    # 2. Fetch Questions (Reusing logic from analyze_file but need a helper or direct query)
+    import sqlite3
+    conn = db.get_connection()
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
     
-    # Zip them
+    query = f'''
+        SELECT q.*, s.filename as source_filename, m.content_html as material_content, m.images as material_images
+        FROM questions q
+        LEFT JOIN sources s ON q.source_id = s.id
+        LEFT JOIN materials m ON q.material_id = m.id
+        WHERE q.id IN ({','.join(['?']*len(qids))})
+    '''
+    c.execute(query, qids)
+    rows = c.fetchall()
+    
+    questions_data = []
+    for row in rows:
+        q = dict(row)
+        if q.get('images'): 
+            try: q['images'] = json.loads(q['images'])
+            except: q['images'] = []
+        if q.get('material_images'):
+             try: q['material_images'] = json.loads(q['material_images'])
+             except: q['material_images'] = []
+        questions_data.append(q)
+    conn.close()
+
+    # Sort
+    questions_map = {q['id']: q for q in questions_data}
+    sorted_questions = []
+    for i, qid in enumerate(qids):
+        if qid in questions_map:
+            q = questions_map[qid]
+            q['original_num'] = i + 1
+            q['num'] = i + 1
+            sorted_questions.append(q)
+
+    # 3. Generate
+    generated_files = create_paper_files(sorted_questions, uuid)
+    
+    # 4. Zip
     import zipfile
-    zip_filename = filename_base.replace(".docx", ".zip")
-    zip_path = os.path.join("temp", zip_filename)
+    zip_filename = f"Paper_{uuid}.zip"
+    zip_path = os.path.join(MEDIA_DIR, "temp", zip_filename)
     
     with zipfile.ZipFile(zip_path, 'w') as zf:
         for fpath in generated_files:
@@ -568,9 +616,56 @@ def find_available_port(start_port, max_port=65535):
                 continue
     return None
 
+# System Tray & Server Startup
+def run_server(port):
+    # Redirect streams for no-console mode
+    if sys.stdout is None: sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None: sys.stderr = open(os.devnull, "w")
+    if sys.stdin is None: sys.stdin = open(os.devnull, "r")
+    
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
+    except Exception as e:
+        # Minimal fail-safe error log
+        if getattr(sys, 'frozen', False):
+             try:
+                 with open("startup_error.log", "w") as f:
+                     f.write(f"Startup Failed: {str(e)}\n")
+             except: pass
+
+def setup_tray(url):
+    try:
+        import pystray
+        from PIL import Image
+    except ImportError:
+        print("pystray or PIL not installed. Running without tray.")
+        return None
+
+    def on_open(icon, item):
+        webbrowser.open(url)
+
+    def on_quit(icon, item):
+        icon.stop()
+        os._exit(0)
+
+    # Load Icon
+    icon_path = os.path.join(ASSET_DIR, "approved.png")
+    if not os.path.exists(icon_path):
+        # Fallback to creating a simple image if missing
+        image = Image.new('RGB', (64, 64), color = (73, 109, 137))
+    else:
+        image = Image.open(icon_path)
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Open MistakeReservoir", on_open, default=True),
+        pystray.MenuItem("Quit", on_quit)
+    )
+
+    icon = pystray.Icon("MistakeReservoir", image, "MistakeReservoir", menu)
+    return icon
+
 if __name__ == "__main__":
     import argparse
-    import uvicorn
     import threading
     import webbrowser
     import time
@@ -596,35 +691,29 @@ if __name__ == "__main__":
     # Server Mode
     port = find_available_port(args.port)
     if not port:
-        # Try to print if possible, then exit
         if sys.stdout: print("Error: No available ports found.")
         sys.exit(1)
         
+    url = f"http://127.0.0.1:{port}"
     print(f"Starting server on port {port}...")
     
-    url = f"http://127.0.0.1:{port}"
+    # Strat Server in Thread
+    server_thread = threading.Thread(target=run_server, args=(port,), daemon=True)
+    server_thread.start()
     
+    # Open Browser
     def open_browser():
         time.sleep(1.5)
         webbrowser.open(url)
-        
     threading.Thread(target=open_browser, daemon=True).start()
-    threading.Thread(target=monitor_heartbeat, daemon=True).start()
     
-    # Uvicorn needs these streams to be valid file-like objects
-    # Fix for PyInstaller --noconsole mode where sys.stdout/stderr/stdin are None
-    if sys.stdout is None: sys.stdout = open(os.devnull, "w")
-    if sys.stderr is None: sys.stderr = open(os.devnull, "w")
-    if sys.stdin is None: sys.stdin = open(os.devnull, "r")
-    
-    try:
-        # Enable logging by default (using uvicorn defaults)
-        uvicorn.run(app, host="127.0.0.1", port=port)
-    except Exception as e:
-        # Minimal fail-safe error log
-        if getattr(sys, 'frozen', False):
-             try:
-                 with open("startup_error.log", "w") as f:
-                     f.write(f"Startup Failed: {str(e)}\n")
-             except: pass
-        raise e
+    # Run Tray (Main Thread)
+    tray = setup_tray(url)
+    if tray:
+        tray.run()
+    else:
+        # Fallback if no tray lib
+        try:
+            while True: time.sleep(1)
+        except KeyboardInterrupt:
+            os._exit(0)

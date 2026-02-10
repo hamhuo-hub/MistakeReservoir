@@ -763,12 +763,7 @@
         loadData();
         loadDailyStats();
     </script>
-    <script>
-        // Heartbeat to keep server alive
-        setInterval(() => {
-            fetch('/api/heartbeat', { method: 'POST' }).catch(() => { });
-        }, 1000);
-    </script>
+    <!-- Heartbeat removed -->
 </body>
 
 </html>
