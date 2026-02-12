@@ -23,6 +23,7 @@ class QuestionExtractor:
         # Expose Patterns for main loop usage
         self.Q_PATTERN = preprocessor.Q_PATTERN
         self.HEADER_PATTERN = preprocessor.HEADER_PATTERN
+        self.IGNORE_PATTERN = preprocessor.IGNORE_PATTERN
         self.FORCE_DELETE_LINES = FORCE_DELETE_LINES
 
     def extract_from_file(self, docx_path: str, target_ids: List[int] = None, skip_images: bool = False, sub_dir: str = None) -> List[Dict]:
@@ -138,6 +139,10 @@ class QuestionExtractor:
                     if not should_skip:
                         buffer.append(block)
                 else:
+                    # check ignore
+                    if self.IGNORE_PATTERN.match(text):
+                        continue
+                        
                     h, imgs = self.post_processor.block_to_html(doc, block, skip_images=skip_images, sub_dir=sub_dir)
                     if text or imgs:
                         self.current_material_content += h

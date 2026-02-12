@@ -13,6 +13,9 @@ HEADER_PATTERN = re.compile(
     r'^\s*(根据|阅读).*(材料|回答|短文)'
 )
 
+# Ignore Pattern (e.g. （共20题，参考时限10分钟）)
+IGNORE_PATTERN = re.compile(r'^\s*[\(（]共\d+题[，,]\s*参考时限\d+分钟[\)）]')
+
 def iter_block_items(parent):
     """Iterate through docx blocks (Paragraphs and Tables)"""
     if isinstance(parent, _Document):
