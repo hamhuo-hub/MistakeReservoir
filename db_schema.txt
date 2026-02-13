@@ -1,0 +1,16 @@
+Columns in questions:
+(0, 'id', 'INTEGER', 0, None, 1)
+(1, 'source_id', 'INTEGER', 0, None, 0)
+(2, 'material_id', 'INTEGER', 0, None, 0)
+(3, 'original_num', 'INTEGER', 0, None, 0)
+(4, 'type', 'TEXT', 0, None, 0)
+(5, 'content_html', 'TEXT', 0, None, 0)
+(6, 'options_html', 'TEXT', 0, None, 0)
+(7, 'answer_html', 'TEXT', 0, None, 0)
+(8, 'images', 'TEXT', 0, None, 0)
+Columns in materials:
+(0, 'id', 'INTEGER', 0, None, 1)
+(1, 'source_id', 'INTEGER', 0, None, 0)
+(2, 'content_html', 'TEXT', 0, None, 0)
+(3, 'images', 'TEXT', 0, None, 0)
+(4, 'type', 'TEXT', 0, None, 0)

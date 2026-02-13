@@ -60,7 +60,6 @@ class DatabaseManager:
                 question_id INTEGER PRIMARY KEY,
                 status TEXT DEFAULT 'pool',
                 mistake_count INTEGER DEFAULT 2,
-                last_wrong_date TEXT,
                 FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
             )
         ''')
@@ -157,9 +156,9 @@ class DatabaseManager:
             # Ensure it bumps back to at least 2 (New) even if it was at 1.
             c.execute('''
                 UPDATE review_stats 
-                SET mistake_count = MAX(mistake_count + 1, 2), last_wrong_date = ?
+                SET mistake_count = MAX(mistake_count + 1, 2)
                 WHERE question_id = ?
-            ''', (datetime.now().isoformat(), qid))
+            ''', (qid,))
             
             conn.commit()
             conn.close()
@@ -173,9 +172,9 @@ class DatabaseManager:
         qid = c.lastrowid
         
         c.execute('''
-            INSERT INTO review_stats (question_id, status, last_wrong_date, mistake_count)
-            VALUES (?, 'pool', ?, 2)
-        ''', (qid, datetime.now().isoformat()))
+            INSERT INTO review_stats (question_id, status, mistake_count)
+            VALUES (?, 'pool', 2)
+        ''', (qid,))
         
         conn.commit()
         conn.close()
@@ -423,7 +422,6 @@ class DatabaseManager:
                     question_id INTEGER PRIMARY KEY,
                     status TEXT DEFAULT 'pool',
                     mistake_count INTEGER DEFAULT 2,
-                    last_wrong_date TEXT,
                     FOREIGN KEY(question_id) REFERENCES questions(id) ON DELETE CASCADE
                 )
             ''')
@@ -431,22 +429,13 @@ class DatabaseManager:
             # Check if last_wrong_date exists in old table
             c.execute("PRAGMA table_info(review_stats_old)")
             old_columns = [col[1] for col in c.fetchall()]
-            has_last_wrong = 'last_wrong_date' in old_columns
             
-            # Copy Data
-            if has_last_wrong:
-                c.execute('''
-                    INSERT INTO review_stats (question_id, status, mistake_count, last_wrong_date)
-                    SELECT question_id, status, mistake_count, last_wrong_date
-                    FROM review_stats_old
-                ''')
-            else:
-                # If old table lacks last_wrong_date, just copy others
-                c.execute('''
-                    INSERT INTO review_stats (question_id, status, mistake_count)
-                    SELECT question_id, status, mistake_count
-                    FROM review_stats_old
-                ''')
+            # Copy Data (Ignore dates)
+            c.execute('''
+                INSERT INTO review_stats (question_id, status, mistake_count)
+                SELECT question_id, status, mistake_count
+                FROM review_stats_old
+            ''')
             
             # Drop old
             c.execute("DROP TABLE review_stats_old")
@@ -484,7 +473,7 @@ class DatabaseManager:
                 print("Added options_html column.")
             except sqlite3.OperationalError:
                 pass # Already exists
-
+            
             conn.commit()
             print("Migration checks completed.")
         except Exception as e:

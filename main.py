@@ -448,73 +448,82 @@ def confirm_save(req: SaveRequest):
         
     # 2. Import Mode Branch
     else:
-        # 1. Add Source (Normal Import)
-        sid = db.add_source(req.source_filename)
-        
-        # 2. Add Questions & Materials
-        material_map = {} # content_hash -> mid
-        
-        # Helper to move file if exists
-        def move_from_temp(filename):
-            src = os.path.join(MEDIA_DIR, "temp", filename)
-            dst = os.path.join(MEDIA_DIR, filename)
-            if os.path.join(MEDIA_DIR, "temp") in src and os.path.exists(src):
-                try:
-                    shutil.move(src, dst)
-                except Exception as e:
-                    print(f"Error moving {filename}: {e}")
-
-        # Helper to fix HTML
-        def fix_html_paths(html):
-            if not html: return html
-            return html.replace("/media/temp/", "/media/")
-
-        for q in req.questions:
-            # Move physical files
-            if q.get('images'):
-                for img in q['images']:
-                    move_from_temp(img)
+        try:
+            # 1. Add Source (Normal Import)
+            sid = db.add_source(req.source_filename)
             
-            # Update HTML
-            q['content_html'] = fix_html_paths(q['content_html'])
-            q['options_html'] = fix_html_paths(q['options_html'])
-            q['answer_html'] = fix_html_paths(q['answer_html'])
+            # 2. Add Questions & Materials
+            material_map = {} # content_hash -> mid
+            
+            # Helper to move file if exists
+            def move_from_temp(filename):
+                src = os.path.join(MEDIA_DIR, "temp", filename)
+                dst = os.path.join(MEDIA_DIR, filename)
+                if os.path.join(MEDIA_DIR, "temp") in src and os.path.exists(src):
+                    try:
+                        shutil.move(src, dst)
+                    except Exception as e:
+                        print(f"Error moving {filename}: {e}")
 
-            # Material handling
-            mid = None
-            mat_content = q.get('material_content')
-            if mat_content:
-                import re
-                mat_temp_imgs = re.findall(r'/media/temp/([\w\-\.]+\.\w+)', mat_content)
-                for img in mat_temp_imgs:
-                    move_from_temp(img)
+            # Helper to fix HTML
+            def fix_html_paths(html):
+                if not html: return html
+                return html.replace("/media/temp/", "/media/")
+
+            for q in req.questions:
+                # Move physical files
+                if q.get('images'):
+                    for img in q['images']:
+                        move_from_temp(img)
                 
-                mat_content = fix_html_paths(mat_content)
+                # Update HTML
+                q['content_html'] = fix_html_paths(q['content_html'])
+                q['options_html'] = fix_html_paths(q['options_html'])
+                q['answer_html'] = fix_html_paths(q['answer_html'])
+
+                # Material handling
+                mid = None
+                mat_content = q.get('material_content')
+                if mat_content:
+                    import re
+                    mat_temp_imgs = re.findall(r'/media/temp/([\w\-\.]+\.\w+)', mat_content)
+                    for img in mat_temp_imgs:
+                        move_from_temp(img)
+                    
+                    mat_content = fix_html_paths(mat_content)
+                    
+                    mat_hash = hash(mat_content)
+                    if mat_hash in material_map:
+                        mid = material_map[mat_hash]
+                    else:
+                        mid = db.add_material(sid, mat_content, type=q['type'])
+                        material_map[mat_hash] = mid
                 
-                mat_hash = hash(mat_content)
-                if mat_hash in material_map:
-                    mid = material_map[mat_hash]
+                # Check for missing keys or defaults
+                q_type = q.get('type', 'Unknown')
+                q_images = q.get('images', [])
+
+                qid, is_new = db.add_question(
+                    source_id=sid,
+                    original_num=q['original_num'],
+                    content=q['content_html'],
+                    options=q['options_html'],
+                    answer=q['answer_html'], 
+                    images=q_images,
+                    type=q_type,
+                    material_id=mid
+                )
+                
+                if is_new:
+                    new_count += 1
                 else:
-                    mid = db.add_material(sid, mat_content, type=q['type'])
-                    material_map[mat_hash] = mid
-            
-            qid, is_new = db.add_question(
-                source_id=sid,
-                original_num=q['original_num'],
-                content=q['content_html'],
-                options=q['options_html'],
-                answer=q['answer_html'], 
-                images=q['images'],
-                type=q['type'],
-                material_id=mid
-            )
-            
-            if is_new:
-                new_count += 1
-            else:
-                repeat_count += 1
-                
-            count += 1
+                    repeat_count += 1
+                    
+                count += 1
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": f"Save failed details: {str(e)}"}
             
     # --- Stats Calculation (Shared) ---
     try:
@@ -529,7 +538,7 @@ def confirm_save(req: SaveRequest):
             "图形": 0.7, "定义": 0.7, "类比": 0.7, "逻辑": 0.7
         }
 
-        mistake_nums = set(q['original_num'] for q in req.questions)
+        mistake_nums = set(str(q.get('original_num', '')) for q in req.questions)
         
         module_stats = {} # {"Verbal": {correct: 0, total: 0}}
         total_score = 0.0
@@ -551,7 +560,17 @@ def confirm_save(req: SaveRequest):
             if module_name not in module_stats:
                 module_stats[module_name] = {"correct": 0, "total": 0}
             
-            is_mistake = q['num'] in mistake_nums
+            # Safe access to num, check 'num' then 'original_num'
+            # Frontend might pass extractor output directly which uses 'original_num'
+            val = q.get('num')
+            if val is None:
+                val = q.get('original_num')
+            
+            q_num = str(val if val is not None else -1)
+            is_mistake = q_num in mistake_nums
+            
+            # Debug (Temporary, remove if too spammy)
+            # print(f"Checking Q {q_num}: Mistake? {is_mistake} (in {mistake_nums})")
             
             # Update Total
             module_stats[module_name]["total"] += 1
