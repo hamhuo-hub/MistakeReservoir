@@ -212,6 +212,7 @@ class SaveRequest(BaseModel):
     questions: List[dict]
     all_questions_meta: List[dict] # {num, type} for stats calculation
     paper_uuid: Optional[str] = None # Added for review mode
+    time_used: Optional[int] = 0 # Added for exam record
 
 class UpdateRequest(BaseModel):
     id: int
@@ -595,7 +596,7 @@ def confirm_save(req: SaveRequest):
              # but let's make it clear it's a review.
              record_name = f"Review_{req.paper_uuid[:8]}"
 
-        db.add_exam_record(record_name, total_score, total_accuracy, module_stats)
+        db.add_exam_record(record_name, total_score, total_accuracy, module_stats, time_used=req.time_used)
         
     except Exception as e:
         print(f"Stats Calculation Failed: {e}")

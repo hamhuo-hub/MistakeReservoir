@@ -85,7 +85,8 @@ class DatabaseManager:
                 filename TEXT,
                 total_score REAL,
                 total_accuracy REAL,
-                module_stats TEXT -- JSON breakdown
+                module_stats TEXT, -- JSON breakdown
+                time_used INTEGER -- Actual time used in minutes (Added in v2)
             )
         ''')
         
@@ -467,10 +468,17 @@ class DatabaseManager:
         conn = self.get_connection()
         c = conn.cursor()
         try:
-            # Migration 1: Add options_html if missing
+            # Migration 1: Add options_html if missing (Old)
             try:
                 c.execute("ALTER TABLE questions ADD COLUMN options_html TEXT")
                 print("Added options_html column.")
+            except sqlite3.OperationalError:
+                pass # Already exists
+
+            # Migration 2: Add time_used to exam_records (New)
+            try:
+                c.execute("ALTER TABLE exam_records ADD COLUMN time_used INTEGER")
+                print("Added time_used column to exam_records.")
             except sqlite3.OperationalError:
                 pass # Already exists
             
@@ -481,14 +489,14 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def add_exam_record(self, filename: str, total_score: float, total_accuracy: float, module_stats: dict) -> int:
+    def add_exam_record(self, filename: str, total_score: float, total_accuracy: float, module_stats: dict, time_used: Optional[int] = None) -> int:
         conn = self.get_connection()
         c = conn.cursor()
         
         c.execute('''
-            INSERT INTO exam_records (upload_date, filename, total_score, total_accuracy, module_stats)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (datetime.now().isoformat(), filename, total_score, total_accuracy, json.dumps(module_stats)))
+            INSERT INTO exam_records (upload_date, filename, total_score, total_accuracy, module_stats, time_used)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (datetime.now().isoformat(), filename, total_score, total_accuracy, json.dumps(module_stats), time_used))
         
         sid = c.lastrowid
         conn.commit()
