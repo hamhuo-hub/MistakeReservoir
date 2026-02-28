@@ -68,6 +68,7 @@ class QuestionExtractor:
                     elif "数量" in text: self.current_type = "数量"
                     elif "资料" in text: self.current_type = "资料"
                     elif "判断" in text: self.current_type = "判断" 
+                    elif "政治" in text: self.current_type = "政治理论" 
                     
                     if "图形" in text and "推理" in text: self.current_type = "图形"
                     elif "定义" in text and "判断" in text: self.current_type = "定义"
